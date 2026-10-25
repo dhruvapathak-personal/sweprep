@@ -13,7 +13,10 @@ const serverSchema = z.object({
   DEPLOYMENT_RECOVERY_APPROVED: z.enum(['true', 'false']).default('false'),
   AI_DAILY_CAP_CENTS: z.coerce.number().int().min(0).max(100).default(0),
   AI_MONTHLY_CAP_CENTS: z.coerce.number().int().min(0).max(2000).default(0),
-  OPENAI_MODEL: z.literal('gpt-5.4-mini-2026-03-17').optional(),
+  OPENAI_MODEL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.literal('gpt-5.4-mini-2026-03-17').optional(),
+  ),
 });
 
 export function serverEnv() {

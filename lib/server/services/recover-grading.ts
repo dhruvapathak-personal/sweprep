@@ -26,8 +26,8 @@ export async function recoverOne(db: SupabaseClient<Database>) {
     p_generation: work.job.generation,
     p_lease: work.job.lease_token,
   };
-  const mode = gradingMode();
   try {
+    const mode = gradingMode();
     let result;
     if (mode === 'simulated') {
       result = simulatedGrade(work);
@@ -46,6 +46,7 @@ export async function recoverOne(db: SupabaseClient<Database>) {
             p_repair: repair,
           }),
         );
+        if (!reservation) throw new Error('GRADING_UNAVAILABLE');
         const response = await requestGrade(work, repair);
         if (
           response.actualCents !== undefined &&

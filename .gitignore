@@ -3,6 +3,7 @@ node_modules/
 .env*
 !.env.example
 coverage/
+.playwright-cli/
 *.tsbuildinfo
 supabase/.temp/
 supabase/.branches/

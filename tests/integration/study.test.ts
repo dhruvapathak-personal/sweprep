@@ -2,10 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createServerClient } from '@supabase/ssr';
 import type { Database, Json } from '@/lib/contracts/database.types';
 import { workSchema } from '@/lib/server/ai/grader';
 import { recoverOne } from '@/lib/server/services/recover-grading';
 import { stateSchema } from '@/lib/contracts/study';
+import { replayReview, type ReviewEvent } from '@/lib/domain/review';
+import { activeMsOnLocalDay } from '@/lib/domain/timing';
 
 const url = process.env.TEST_SUPABASE_URL ?? '';
 const key = process.env.TEST_SUPABASE_KEY ?? '';
@@ -175,36 +178,33 @@ describe('real authenticated database', { concurrent: false }, () => {
     ).not.toBeNull();
     expect(
       (
-        await a
-          .from('attempt_grades')
-          .insert({
-            attempt_id: randomUUID(),
-            user_id: uid,
-            generation: 1,
-            outcome: 'scored',
-            score: 5,
-            passed: true,
-            details: scored,
-            rubric_version: 'fake',
-            grader_version: 'fake',
-            model: 'fake',
-            prompt_version: 'fake',
-            validator_version: 'fake',
-            simulated: false,
-          })
+        await a.from('attempt_grades').insert({
+          attempt_id: randomUUID(),
+          user_id: uid,
+          generation: 1,
+          outcome: 'scored',
+          score: 5,
+          passed: true,
+          details: scored,
+          rubric_version: 'fake',
+          grader_version: 'fake',
+          model: 'fake',
+          prompt_version: 'fake',
+          validator_version: 'fake',
+          worker_lease: randomUUID(),
+          simulated: false,
+        })
       ).error,
     ).not.toBeNull();
     expect(
       (
-        await a
-          .from('review_episodes')
-          .insert({
-            id: randomUUID(),
-            user_id: uid,
-            question_id: 'x',
-            first_missed_at: new Date().toISOString(),
-            streak: 999,
-          })
+        await a.from('review_episodes').insert({
+          id: randomUUID(),
+          user_id: uid,
+          question_id: 'x',
+          first_missed_at: new Date().toISOString(),
+          streak: 999,
+        })
       ).error,
     ).not.toBeNull();
     expect((await a.rpc('claim_grading')).error).not.toBeNull();
@@ -263,6 +263,24 @@ describe('real authenticated database', { concurrent: false }, () => {
     const item = await start();
     const first = await a.rpc('checkpoint', checkpoint(item));
     expect(first.error).toBeNull();
+    const heartbeat = await a.rpc('checkpoint', {
+      ...checkpoint(item, 1),
+      p_action: 'save',
+    });
+    expect(heartbeat.error).toBeNull();
+    expect(heartbeat.data?.version).toBe(1);
+    const pause = await a.rpc('checkpoint', {
+      ...checkpoint(item, 1),
+      p_action: 'pause',
+    });
+    expect(pause.error).toBeNull();
+    expect(pause.data?.version).toBe(1);
+    const resume = await a.rpc('checkpoint', {
+      ...checkpoint(item, 1),
+      p_action: 'resume',
+    });
+    expect(resume.error).toBeNull();
+    expect(resume.data?.version).toBe(1);
     expect(
       (await a.rpc('checkpoint', checkpoint(item, 0, 'Stale other copy'))).error
         ?.message,
@@ -306,7 +324,14 @@ describe('real authenticated database', { concurrent: false }, () => {
       .from('timing_segments')
       .select()
       .eq('item_id', item);
-    expect(segments.data).toEqual([]);
+    expect(segments.data).toHaveLength(2);
+    const ordered = [...(segments.data ?? [])].sort(
+      (left, right) =>
+        Date.parse(left.started_at) - Date.parse(right.started_at),
+    );
+    expect(Date.parse(ordered[0].ended_at)).toBeLessThanOrEqual(
+      Date.parse(ordered[1].started_at),
+    );
     expect(
       (await a.from('session_items').select('paused').eq('id', item).single())
         .data?.paused,
@@ -404,6 +429,7 @@ describe('real authenticated database', { concurrent: false }, () => {
     ]);
     expect(completions.every((r) => r.error === null)).toBe(true);
     expect(completions[0].data).toBe(completions[1].data);
+    expect((await finish(old)).error?.message).toBe('STALE_LEASE');
     expect(
       (await a.from('grade_selections').select().eq('attempt_id', submitted.id))
         .data,
@@ -520,7 +546,11 @@ describe('real authenticated database', { concurrent: false }, () => {
 
   it('preserves prior scored grades during failed/uncertain regrade and replays corrections and invalidation', async () => {
     const { id } = await submit();
-    const first = await finish(await claim(), { ...scored, score: 1 });
+    const first = await finish(await claim(), {
+      ...scored,
+      score: 5,
+      criticalClaimsMet: false,
+    });
     expect(first.error).toBeNull();
     expect(
       (await a.from('review_episodes').select().eq('user_id', uid)).data,
@@ -598,6 +628,342 @@ describe('real authenticated database', { concurrent: false }, () => {
         email: 'test@example.test',
         gradingMode: 'simulated',
       }).success,
+    ).toBe(true);
+    const invalidConfiguration = await submit(
+      a,
+      'Synthetic configuration failure.',
+    );
+    process.env.ALLOW_LOCAL_SIMULATION = 'false';
+    try {
+      expect(await recoverOne(admin)).toEqual({
+        processed: true,
+        outcome: 'GRADING_UNAVAILABLE',
+      });
+      expect(
+        (
+          await a
+            .from('grading_jobs')
+            .select('state')
+            .eq('attempt_id', invalidConfiguration.id)
+            .single()
+        ).data?.state,
+      ).toBe('failed');
+    } finally {
+      process.env.ALLOW_LOCAL_SIMULATION = 'true';
+    }
+  });
+
+  it('replays out-of-order grades with elapsed-day graduation, neutral uncertainty and a fresh relapse episode', async () => {
+    const learner = await user();
+    const day = 86400000;
+    const epoch = Date.parse('2026-01-01T00:00:00Z');
+    const events: ReviewEvent[] = [
+      {
+        id: randomUUID(),
+        submittedAt: epoch,
+        outcome: 'failed',
+        assisted: false,
+        source: 'first',
+        jitter: 0.5,
+      },
+      ...Array.from({ length: 10 }, (_, index): ReviewEvent => ({
+        id: randomUUID(),
+        submittedAt: epoch + (index === 9 ? 29 : index + 1) * day,
+        outcome: 'passed',
+        assisted: false,
+        source: 'review',
+        jitter: 0.5,
+      })),
+      {
+        id: randomUUID(),
+        submittedAt: epoch + 30 * day,
+        outcome: 'unscored',
+        assisted: false,
+        source: 'review',
+        jitter: 0.5,
+      },
+      {
+        id: randomUUID(),
+        submittedAt: epoch + 30 * day + 1000,
+        outcome: 'passed',
+        assisted: false,
+        source: 'review',
+        jitter: 0.5,
+      },
+      {
+        id: randomUUID(),
+        submittedAt: epoch + 31 * day,
+        outcome: 'failed',
+        assisted: false,
+        source: 'review',
+        jitter: 0.5,
+      },
+      {
+        id: randomUUID(),
+        submittedAt: epoch + 32 * day,
+        outcome: 'passed',
+        assisted: true,
+        source: 'review',
+        jitter: 0.5,
+      },
+      {
+        id: randomUUID(),
+        submittedAt: epoch + 33 * day,
+        outcome: 'passed',
+        assisted: false,
+        source: 'review',
+        jitter: 0.5,
+      },
+    ];
+    for (const event of events) {
+      const session = randomUUID(),
+        item = randomUUID();
+      sql(`insert into public.sessions(id,user_id,state) values('${session}','${learner.id}','submitted');
+        insert into public.session_items(id,user_id,session_id,question_version_id,source,state) values('${item}','${learner.id}','${session}','${question}','${event.source}','submitted');
+        insert into public.attempts(id,user_id,item_id,question_version_id,answer_text,confidence,assisted,source,active_ms,submitted_at,idempotency_key,request_fingerprint,scheduling_jitter)
+          values('${event.id}','${learner.id}','${item}','${question}','Synthetic historical answer','unsure',${event.assisted},'${event.source}',0,'${new Date(event.submittedAt).toISOString()}','${randomUUID()}','fixture',0.5);
+        insert into public.grading_jobs(attempt_id,user_id) values('${event.id}','${learner.id}');`);
+    }
+    const jobs = new Map<string, Awaited<ReturnType<typeof claim>>>();
+    for (let index = 0; index < events.length; index++) {
+      const job = await claim();
+      jobs.set(job.job.attempt_id, job);
+    }
+    const finishEvent = async (event: ReviewEvent) => {
+      const job = jobs.get(event.id);
+      if (!job) throw new Error('Missing historical grading work');
+      expect(
+        (
+          await finish(
+            job,
+            event.outcome === 'unscored'
+              ? { outcome: 'uncertain', reason: 'Synthetic uncertainty.' }
+              : { ...scored, score: event.outcome === 'failed' ? 1 : 3 },
+          )
+        ).error,
+      ).toBeNull();
+    };
+    for (const event of events.slice(0, 11).reverse()) await finishEvent(event);
+    let rows = (
+      await learner.db.from('review_episodes').select().order('first_missed_at')
+    ).data;
+    expect(rows?.[0]).toMatchObject({ streak: 10, graduated_at: null });
+    for (const event of events.slice(11)) await finishEvent(event);
+    rows = (
+      await learner.db.from('review_episodes').select().order('first_missed_at')
+    ).data;
+    const reference = replayReview(events);
+    expect(rows).toHaveLength(2);
+    for (const [index, expected] of reference.entries()) {
+      const actual = rows?.[index];
+      expect(actual?.id).toBe(expected.id);
+      expect(actual?.streak).toBe(expected.streak);
+      expect(
+        actual?.graduated_at ? Date.parse(actual.graduated_at) : null,
+      ).toBe(expected.graduatedAt);
+      expect(actual?.next_due_at ? Date.parse(actual.next_due_at) : null).toBe(
+        expected.nextDueAt,
+      );
+      expect(
+        actual?.first_missed_at ? Date.parse(actual.first_missed_at) : null,
+      ).toBe(expected.firstMissedAt);
+    }
+  });
+
+  it('rejects null CAS versions, oversized direct requests and forged composite ownership', async () => {
+    const learner = await user();
+    const item = await start(learner.db);
+    const session = await learner.db.auth.getSession();
+    const response = await fetch(`${url}/rest/v1/rpc/checkpoint`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        authorization: `Bearer ${session.data.session?.access_token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ...checkpoint(item), p_version: null }),
+    });
+    expect(response.ok).toBe(false);
+    expect((await response.json()).message).toBe('SYNC_CONFLICT');
+    expect(
+      (
+        await learner.db.rpc(
+          'checkpoint',
+          checkpoint(item, 0, 'x'.repeat(12001)),
+        )
+      ).error?.message,
+    ).toBe('VALIDATION_ERROR');
+    const foreignSession = randomUUID();
+    sql(
+      `insert into public.sessions(id,user_id,state) values('${foreignSession}','${learner.id}','submitted')`,
+    );
+    expect(() =>
+      sql(`insert into public.session_items(user_id,session_id,question_version_id,source)
+      values('${uid}','${foreignSession}','${question}','first')`),
+    ).toThrow(/session_items_session_id_user_id_fkey/);
+    sql(
+      `insert into private.grading_requests(user_id) select '${learner.id}' from generate_series(1,30);`,
+    );
+    expect(
+      (
+        await learner.db.rpc('submit_answer', {
+          p_item: item,
+          p_version: 0,
+          p_question: question,
+          p_answer: 'Synthetic text',
+          p_confidence: 'unsure',
+          p_assisted: false,
+          p_device: device,
+          p_key: randomUUID(),
+        })
+      ).error?.message,
+    ).toBe('RETRY_LIMIT');
+    expect((await learner.db.from('attempts').select()).data).toEqual([]);
+  });
+
+  it('aggregates UTC timing events across local midnight and rebuckets a changed profile timezone', async () => {
+    const learner = await user();
+    const item = await start(learner.db);
+    sql(`insert into public.timing_segments(user_id,item_id,started_at,ended_at)
+      select '${learner.id}','${item}',boundary - interval '10 seconds',boundary + interval '10 seconds'
+      from (select (now() at time zone 'America/New_York')::date::timestamp at time zone 'America/New_York' as boundary) b`);
+    const first = (await learner.db.rpc('study_state')).data as {
+      todayMs: number;
+    };
+    expect(first.todayMs).toBe(10000);
+    sql(
+      `update public.profiles set timezone='UTC' where user_id='${learner.id}'`,
+    );
+    const second = (await learner.db.rpc('study_state')).data as {
+      todayMs: number;
+      serverNow: string;
+    };
+    const segments =
+      (await learner.db.from('timing_segments').select()).data ?? [];
+    expect(second.todayMs).toBe(
+      activeMsOnLocalDay(
+        segments.map((value) => ({
+          startedAt: Date.parse(value.started_at),
+          endedAt: Date.parse(value.ended_at),
+        })),
+        second.serverNow.slice(0, 10),
+        'UTC',
+      ),
+    );
+    expect(segments).toHaveLength(1);
+  });
+
+  it('verifies real HTTP cookies, rejects forged requests and recovers without a browser', async () => {
+    const origin = process.env.TEST_APP_URL ?? '';
+    const cookieHeader = async (db: SupabaseClient<Database>) => {
+      const session = (await db.auth.getSession()).data.session;
+      if (!session) throw new Error('Missing test session');
+      const jar = new Map<string, string>();
+      const ssr = createServerClient<Database>(url, key, {
+        cookies: {
+          getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+          setAll: (values) =>
+            values.forEach(({ name, value }) => jar.set(name, value)),
+        },
+      });
+      expect((await ssr.auth.setSession(session)).error).toBeNull();
+      return [...jar].map(([name, value]) => `${name}=${value}`).join('; ');
+    };
+    const owner = await user(),
+      outsider = await user();
+    const item = await start(owner.db);
+    const ownerCookie = await cookieHeader(owner.db),
+      outsiderCookie = await cookieHeader(outsider.db);
+    expect((await fetch(`${origin}/api/study`)).status).toBe(401);
+    const stateResponse = await fetch(`${origin}/api/study`, {
+      headers: { cookie: ownerCookie },
+    });
+    expect(stateResponse.status).toBe(200);
+    expect(stateResponse.headers.get('cache-control')).toContain('no-store');
+    expect(
+      stateSchema
+        .parse(await stateResponse.json())
+        .items.some((value) => value.id === item),
+    ).toBe(true);
+    const otherResponse = await fetch(`${origin}/api/study`, {
+      headers: { cookie: outsiderCookie },
+    });
+    expect(stateSchema.parse(await otherResponse.json()).items).toEqual([]);
+    const input = {
+      action: 'checkpoint',
+      itemId: item,
+      version: 0,
+      answer: 'Foreign attempt',
+      confidence: 'unsure',
+      assisted: false,
+      deviceId: device,
+      timingAction: 'save',
+    };
+    const denied = await fetch(`${origin}/api/study`, {
+      method: 'POST',
+      headers: {
+        origin,
+        cookie: outsiderCookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
+    expect(denied.status).toBe(403);
+    const forged = await fetch(`${origin}/api/study`, {
+      method: 'POST',
+      headers: {
+        origin,
+        cookie: ownerCookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ...input, userId: owner.id, score: 5 }),
+    });
+    expect(forged.status).toBe(400);
+    const crossSite = await fetch(`${origin}/api/study`, {
+      method: 'POST',
+      headers: {
+        origin: 'https://other.example.test',
+        cookie: ownerCookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
+    expect(crossSite.status).toBe(403);
+    const submitted = await fetch(`${origin}/api/study`, {
+      method: 'POST',
+      headers: {
+        origin,
+        cookie: ownerCookie,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        action: 'submit',
+        itemId: item,
+        version: 0,
+        questionId: question,
+        answer: 'Synthetic HTTP answer.',
+        confidence: 'unsure',
+        assisted: false,
+        deviceId: device,
+        key: randomUUID(),
+      }),
+    });
+    expect(submitted.status).toBe(200);
+    expect(
+      (await fetch(`${origin}/api/internal/recover`, { method: 'POST' }))
+        .status,
+    ).toBe(403);
+    const recovered = await fetch(`${origin}/api/internal/recover`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${process.env.TEST_RECOVERY_SECRET}` },
+    });
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toEqual({
+      processed: true,
+      outcome: 'scored',
+    });
+    expect(
+      (await owner.db.from('attempt_grades').select()).data?.[0].simulated,
     ).toBe(true);
   });
 });

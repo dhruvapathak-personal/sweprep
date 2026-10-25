@@ -25,14 +25,14 @@ export type Database = {
           Tables: {
             "attempt_grades": {
                   Row: {
-                    "attempt_id": string,"created_at": string,"details": NonNullable<Json>,"generation": number,"grader_version": string,"id": string,"model": string,"outcome": string,"passed": boolean | null,"prompt_version": string,"rubric_version": string,"score": number | null,"simulated": boolean,"user_id": string,"validator_version": string
+                    "attempt_id": string,"created_at": string,"details": NonNullable<Json>,"generation": number,"grader_version": string,"id": string,"model": string,"outcome": string,"passed": boolean | null,"prompt_version": string,"rubric_version": string,"score": number | null,"simulated": boolean,"user_id": string,"validator_version": string,"worker_lease": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "attempt_id": string,"created_at"?: string,"details": NonNullable<Json>,"generation": number,"grader_version": string,"id"?: string,"model": string,"outcome": string,"passed"?: boolean | null,"prompt_version": string,"rubric_version": string,"score"?: number | null,"simulated": boolean,"user_id": string,"validator_version": string
+                    "attempt_id": string,"created_at"?: string,"details": NonNullable<Json>,"generation": number,"grader_version": string,"id"?: string,"model": string,"outcome": string,"passed"?: boolean | null,"prompt_version": string,"rubric_version": string,"score"?: number | null,"simulated": boolean,"user_id": string,"validator_version": string,"worker_lease": string
                   }
                   Update: {
-                    "attempt_id"?: string,"created_at"?: string,"details"?: NonNullable<Json>,"generation"?: number,"grader_version"?: string,"id"?: string,"model"?: string,"outcome"?: string,"passed"?: boolean | null,"prompt_version"?: string,"rubric_version"?: string,"score"?: number | null,"simulated"?: boolean,"user_id"?: string,"validator_version"?: string
+                    "attempt_id"?: string,"created_at"?: string,"details"?: NonNullable<Json>,"generation"?: number,"grader_version"?: string,"id"?: string,"model"?: string,"outcome"?: string,"passed"?: boolean | null,"prompt_version"?: string,"rubric_version"?: string,"score"?: number | null,"simulated"?: boolean,"user_id"?: string,"validator_version"?: string,"worker_lease"?: string
                   }
                   Relationships: [
                     {
@@ -63,6 +63,26 @@ isOneToOne: false
       referencedColumns: ["id","user_id","question_version_id"]
     }
                   ]
+                },"curriculum_skills": {
+                  Row: {
+                    "id": string,"name": string,"parent_id": string | null
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "id": string,"name": string,"parent_id"?: string | null
+                  }
+                  Update: {
+                    "id"?: string,"name"?: string,"parent_id"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "curriculum_skills_parent_id_fkey"
+      columns: ["parent_id"]
+isOneToOne: false
+      referencedRelation: "curriculum_skills"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"grade_selections": {
                   Row: {
                     "attempt_id": string,"grade_id": string,"id": number,"previous_grade_id": string | null,"reason": string,"selected_at": string,"user_id": string
@@ -82,11 +102,11 @@ isOneToOne: false
       referencedRelation: "attempt_grades"
       referencedColumns: ["id","attempt_id","user_id"]
     },{
-      foreignKeyName: "grade_selections_previous_grade_id_fkey"
-      columns: ["previous_grade_id"]
+      foreignKeyName: "grade_selections_previous_grade_id_attempt_id_user_id_fkey"
+      columns: ["previous_grade_id","attempt_id","user_id"]
 isOneToOne: false
       referencedRelation: "attempt_grades"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","attempt_id","user_id"]
     }
                   ]
                 },"grading_jobs": {
@@ -125,17 +145,23 @@ isOneToOne: false
                   ]
                 },"question_versions": {
                   Row: {
-                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"title": string,"version": number
+                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"skill_id": string,"title": string,"version": number
                   }
                   ComputedFields: never
                   Insert: {
-                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"title": string,"version": number
+                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"skill_id": string,"title": string,"version": number
                   }
                   Update: {
-                    "content_blocks"?: NonNullable<Json>,"content_review"?: string,"id"?: string,"prompt_version"?: string,"question_id"?: string,"skill"?: string,"title"?: string,"version"?: number
+                    "content_blocks"?: NonNullable<Json>,"content_review"?: string,"id"?: string,"prompt_version"?: string,"question_id"?: string,"skill"?: string,"skill_id"?: string,"title"?: string,"version"?: number
                   }
                   Relationships: [
-                    
+                    {
+      foreignKeyName: "question_versions_skill_id_fkey"
+      columns: ["skill_id"]
+isOneToOne: false
+      referencedRelation: "curriculum_skills"
+      referencedColumns: ["id"]
+    }
                   ]
                 },"review_episodes": {
                   Row: {
@@ -150,11 +176,11 @@ isOneToOne: false
                   }
                   Relationships: [
                     {
-      foreignKeyName: "review_episodes_id_fkey"
-      columns: ["id"]
-isOneToOne: true
+      foreignKeyName: "review_episodes_id_user_id_fkey"
+      columns: ["id","user_id"]
+isOneToOne: false
       referencedRelation: "attempts"
-      referencedColumns: ["id"]
+      referencedColumns: ["id","user_id"]
     }
                   ]
                 },"session_items": {

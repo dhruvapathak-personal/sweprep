@@ -62,6 +62,11 @@ export function simulatedGrade(work: GradingWork) {
 }
 
 export function providerFailure(error: unknown, priorRequests: number) {
+  if (error instanceof OpenAI.APIConnectionError)
+    return {
+      code: 'PROVIDER_TIMEOUT',
+      retrySeconds: priorRequests === 0 ? 30 : 120,
+    };
   if (error instanceof OpenAI.APIError) {
     const retryable =
       error.status === 408 ||
@@ -85,11 +90,6 @@ export function providerFailure(error: unknown, priorRequests: number) {
         : 0,
     };
   }
-  if (error instanceof OpenAI.APIConnectionError)
-    return {
-      code: 'PROVIDER_TIMEOUT',
-      retrySeconds: priorRequests === 0 ? 30 : 120,
-    };
   const code =
     error instanceof Error &&
     [
@@ -144,7 +144,13 @@ export async function requestGrade(work: GradingWork, repair: boolean) {
       },
     },
   });
-  const usage = response.usage;
+  const parsedUsage = z
+    .object({
+      input_tokens: z.number().int().min(0).max(1000000),
+      output_tokens: z.number().int().min(0).max(3000),
+    })
+    .safeParse(response.usage);
+  const usage = parsedUsage.success ? parsedUsage.data : undefined;
   const actualCents = usage
     ? Math.ceil((usage.input_tokens * 0.75 + usage.output_tokens * 4.5) / 10000)
     : undefined;
@@ -154,7 +160,11 @@ export async function requestGrade(work: GradingWork, repair: boolean) {
     latencyMs: Date.now() - started,
   };
   let result: z.infer<typeof providerResultSchema> | undefined;
-  if (response.status === 'completed' && response.output_text.length <= 20000) {
+  if (
+    response.status === 'completed' &&
+    typeof response.output_text === 'string' &&
+    response.output_text.length <= 20000
+  ) {
     try {
       const parsed = providerResultSchema.safeParse(
         JSON.parse(response.output_text),

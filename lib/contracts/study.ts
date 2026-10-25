@@ -55,14 +55,24 @@ export const studyActionSchema = z.discriminatedUnion('action', [
     .object({
       action: z.literal('checkpoint'),
       ...draftFields,
-      timingAction: z.enum(['save', 'claim', 'takeover', 'pause', 'resume']),
+      timingAction: z.enum([
+        'save',
+        'claim',
+        'takeover',
+        'pause',
+        'resume',
+        'disconnect',
+      ]),
     })
     .strict(),
   z
     .object({
       action: z.literal('submit'),
       ...draftFields,
-      answer: z.string().trim().min(1).max(12000),
+      answer: z
+        .string()
+        .max(12000)
+        .refine((text) => text.trim().length > 0),
       questionId: z.uuid(),
       key: z.uuid(),
     })

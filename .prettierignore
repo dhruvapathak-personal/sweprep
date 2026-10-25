@@ -1,7 +1,9 @@
 package-lock.json
 .next/
 node_modules/
+.playwright-cli/
 lib/contracts/database.types.ts
+next-env.d.ts
 supabase/.temp/
 supabase/.branches/
 docs/README.md

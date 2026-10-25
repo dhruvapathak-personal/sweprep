@@ -129,6 +129,7 @@ declare
   r private.rubrics;
   v_question text;
   v_grade uuid;
+  v_finalized_lease uuid;
   v_previous uuid;
   v_outcome text := p_result->>'outcome';
   v_score integer;
@@ -138,8 +139,11 @@ begin
   if not found then raise exception 'VALIDATION_ERROR'; end if;
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(a.user_id::text, 1));
   select * into j from public.grading_jobs where attempt_id = p_attempt for update;
-  select id into v_grade from public.attempt_grades where attempt_id = p_attempt and generation = p_generation;
-  if found and j.generation = p_generation then return v_grade; end if;
+  select id,worker_lease into v_grade,v_finalized_lease from public.attempt_grades where attempt_id = p_attempt and generation = p_generation;
+  if found then
+    if j.generation = p_generation and v_finalized_lease = p_lease then return v_grade; end if;
+    raise exception 'STALE_LEASE';
+  end if;
   if j.state is distinct from 'grading' or j.generation is distinct from p_generation or j.lease_token is distinct from p_lease or j.lease_until <= now() then raise exception 'STALE_LEASE'; end if;
   select * into r from private.rubrics where question_version_id = a.question_version_id;
   if v_outcome not in ('scored','uncertain','invalidated') or v_outcome is null or
@@ -152,9 +156,9 @@ begin
     v_passed := v_score >= r.pass_score and (p_result->>'criticalClaimsMet')::boolean;
   end if;
   insert into public.attempt_grades(user_id,attempt_id,generation,outcome,score,passed,details,rubric_version,
-    grader_version,model,prompt_version,validator_version,simulated)
+    grader_version,model,prompt_version,validator_version,worker_lease,simulated)
     values(a.user_id,a.id,p_generation,v_outcome,v_score,v_passed,p_result,r.version,
-      'grader-v1',p_model,'grade-prompt-v1','grade-schema-v1',p_simulated) returning id into v_grade;
+      'grader-v1',p_model,'grade-prompt-v1','grade-schema-v1',p_lease,p_simulated) returning id into v_grade;
   select grade_id into v_previous from public.grade_selections where attempt_id = p_attempt order by id desc limit 1;
   if v_outcome <> 'uncertain' or v_previous is null then
     insert into public.grade_selections(user_id,attempt_id,grade_id,previous_grade_id,reason)

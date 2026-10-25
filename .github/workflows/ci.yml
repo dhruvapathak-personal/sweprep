@@ -1,0 +1,29 @@
+name: Verify application
+on:
+  pull_request:
+  push:
+    branches: [main, factory/mvp1-text-study-loop]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm install --global npm@11.3.0
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run db:start
+      - run: npm run test:integration
+      - run: npm run db:types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts

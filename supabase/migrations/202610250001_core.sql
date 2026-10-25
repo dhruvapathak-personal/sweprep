@@ -9,12 +9,19 @@ create table public.profiles (
   created_at timestamptz not null default now()
 );
 
+create table public.curriculum_skills (
+  id text primary key check (length(id) between 1 and 100),
+  parent_id text references public.curriculum_skills,
+  name text not null check (length(name) between 1 and 100)
+);
+
 create table public.question_versions (
   id uuid primary key,
   question_id text not null check (length(question_id) between 1 and 100),
   version integer not null check (version > 0),
   title text not null check (length(title) between 1 and 200),
   skill text not null check (length(skill) between 1 and 100),
+  skill_id text not null references public.curriculum_skills,
   content_blocks jsonb not null check (jsonb_typeof(content_blocks) = 'array' and octet_length(content_blocks::text) < 20000),
   content_review text not null check (content_review in ('candidate', 'approved')),
   prompt_version text not null,
@@ -122,6 +129,7 @@ create table public.attempt_grades (
   model text not null,
   prompt_version text not null,
   validator_version text not null,
+  worker_lease uuid not null,
   simulated boolean not null,
   created_at timestamptz not null default now(),
   foreign key (attempt_id, user_id) references public.attempts(id, user_id),
@@ -136,22 +144,42 @@ create table public.grade_selections (
   user_id uuid not null,
   attempt_id uuid not null,
   grade_id uuid not null,
-  previous_grade_id uuid references public.attempt_grades,
+  previous_grade_id uuid,
   reason text not null check (length(reason) between 1 and 300),
   selected_at timestamptz not null default now(),
-  foreign key (grade_id, attempt_id, user_id) references public.attempt_grades(id, attempt_id, user_id)
+  foreign key (grade_id, attempt_id, user_id) references public.attempt_grades(id, attempt_id, user_id),
+  foreign key (previous_grade_id, attempt_id, user_id) references public.attempt_grades(id, attempt_id, user_id)
 );
 
 create table public.review_episodes (
-  id uuid primary key references public.attempts,
+  id uuid primary key,
   user_id uuid not null references auth.users on delete cascade,
   question_id text not null,
   first_missed_at timestamptz not null,
   streak integer not null check (streak >= 0),
   graduated_at timestamptz,
   next_due_at timestamptz,
-  rules_version text not null default 'review-v1'
+  rules_version text not null default 'review-v1',
+  foreign key (id, user_id) references public.attempts(id, user_id)
 );
+
+create table private.grading_requests (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  requested_at timestamptz not null default now()
+);
+create index grading_request_window on private.grading_requests(user_id, requested_at);
+
+create function private.record_grading_request() returns void
+language plpgsql set search_path = '' as $$
+begin
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(auth.uid()::text, 1));
+  if (select count(*) from private.grading_requests where user_id = auth.uid() and requested_at > now() - interval '1 hour') >= 30 then
+    raise exception 'RETRY_LIMIT';
+  end if;
+  insert into private.grading_requests(user_id) values(auth.uid());
+end;
+$$;
 
 create table private.provider_requests (
   id uuid primary key default gen_random_uuid(),
@@ -179,6 +207,7 @@ create trigger questions_immutable before update or delete on public.question_ve
 create trigger rubrics_immutable before update or delete on private.rubrics for each row execute function private.immutable_history();
 
 alter table public.profiles enable row level security;
+alter table public.curriculum_skills enable row level security;
 alter table public.question_versions enable row level security;
 alter table public.sessions enable row level security;
 alter table public.session_items enable row level security;
@@ -190,8 +219,10 @@ alter table public.grade_selections enable row level security;
 alter table public.review_episodes enable row level security;
 alter table private.rubrics enable row level security;
 alter table private.provider_requests enable row level security;
+alter table private.grading_requests enable row level security;
 
 create policy own_profile on public.profiles for select to authenticated using (user_id = (select auth.uid()));
+create policy signed_in_skills on public.curriculum_skills for select to authenticated using (true);
 create policy signed_in_questions on public.question_versions for select to authenticated using (true);
 create policy own_sessions on public.sessions for select to authenticated using (user_id = (select auth.uid()));
 create policy own_items on public.session_items for select to authenticated using (user_id = (select auth.uid()));
@@ -203,7 +234,7 @@ create policy own_selections on public.grade_selections for select to authentica
 create policy own_episodes on public.review_episodes for select to authenticated using (user_id = (select auth.uid()));
 
 revoke all on all tables in schema public from anon, authenticated;
-grant select on public.profiles, public.question_versions, public.sessions, public.session_items,
+grant select on public.profiles, public.curriculum_skills, public.question_versions, public.sessions, public.session_items,
   public.timing_segments, public.attempts, public.grading_jobs, public.attempt_grades,
   public.grade_selections, public.review_episodes to authenticated;
 revoke all on all tables in schema private from anon, authenticated, service_role;
@@ -249,21 +280,21 @@ begin
   if v.state <> 'answering' then raise exception 'ALREADY_SUBMITTED'; end if;
   if v.version is distinct from p_version then raise exception 'SYNC_CONFLICT'; end if;
   if p_answer is null or length(p_answer) > 12000 or p_confidence is null or p_confidence not in ('guess','unsure','fairly_sure','certain')
-    or p_assisted is null or p_device is null or p_action is null or p_action not in ('save','claim','takeover','pause','resume') then
+    or p_assisted is null or p_device is null or p_action is null or p_action not in ('save','claim','takeover','pause','resume','disconnect') then
     raise exception 'VALIDATION_ERROR';
   end if;
   if v.lease_device is not null and v.lease_device is distinct from p_device and
     (p_action not in ('claim','takeover') or (v.lease_until > t and p_action <> 'takeover')) then
     raise exception 'TIMER_OWNED';
   end if;
-  if v.lease_device = p_device and v.lease_until > t and not v.paused then
+  if v.lease_device = p_device and v.lease_until > t and not v.paused and p_action not in ('disconnect','takeover') then
     insert into public.timing_segments(user_id, item_id, started_at, ended_at)
       values(v.user_id, v.id, v.last_ack_at, t);
   end if;
   if p_action in ('claim','takeover','resume') then
     v.lease_device := p_device;
     v.paused := false;
-  elsif p_action = 'pause' or v.lease_until <= t then
+  elsif p_action in ('pause','disconnect') or v.lease_until <= t then
     v.paused := true;
   end if;
   if v.lease_device = p_device then
@@ -272,7 +303,9 @@ begin
   end if;
   update public.session_items set
     answer_text = p_answer, confidence = p_confidence, assisted = assisted or p_assisted,
-    version = version + 1, saved_at = t,
+    version = version + case when answer_text is distinct from p_answer or confidence is distinct from p_confidence
+      or (assisted or p_assisted) is distinct from assisted then 1 else 0 end,
+    saved_at = t,
     first_interaction_at = case when length(p_answer) > 0 then coalesce(first_interaction_at, t) else first_interaction_at end,
     lease_device = v.lease_device, lease_until = v.lease_until, last_ack_at = v.last_ack_at, paused = v.paused
     where id = p_item returning * into v;
@@ -306,6 +339,7 @@ begin
   if not found then raise exception 'FORBIDDEN'; end if;
   if v.state <> 'answering' then raise exception 'ALREADY_SUBMITTED'; end if;
   if v.question_version_id <> p_question then raise exception 'VALIDATION_ERROR'; end if;
+  perform private.record_grading_request();
   v := public.checkpoint(p_item,p_version,p_answer,p_confidence,p_assisted,p_device,'pause');
   select coalesce(sum(extract(epoch from (ended_at - started_at)) * 1000),0)::bigint
     into v_ms from public.timing_segments where item_id = p_item;
@@ -322,6 +356,7 @@ create function public.retry_grade(p_attempt uuid) returns integer
 language plpgsql security definer set search_path = '' as $$
 declare j public.grading_jobs;
 begin
+  perform private.record_grading_request();
   select * into j from public.grading_jobs where attempt_id = p_attempt and user_id = auth.uid() for update;
   if not found then raise exception 'FORBIDDEN'; end if;
   if j.state not in ('failed','uncertain','scored') then raise exception 'GRADING_PENDING'; end if;
