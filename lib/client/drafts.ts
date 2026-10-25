@@ -58,6 +58,7 @@ export async function readDraft(
   userId: string,
   itemId: string,
   writerId: string,
+  recoveryWriterId?: string,
 ) {
   const values: unknown[] = await transaction('readonly', (store) =>
     store.getAll(),
@@ -73,6 +74,7 @@ export async function readDraft(
     );
   return (
     candidates.find((value) => value.writerId === writerId) ??
+    candidates.find((value) => value.writerId === recoveryWriterId) ??
     candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ??
     null
   );

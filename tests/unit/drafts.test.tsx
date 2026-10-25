@@ -7,9 +7,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AnswerEditor } from '@/components/answer-editor';
+import { Trainer } from '@/components/trainer';
 import { readState } from '@/lib/client/api';
 import {
   clearDrafts,
@@ -75,6 +77,81 @@ const snapshot = (answer: string, writer = writerId): DraftSnapshot => ({
   submission: null,
   timingDisconnected: false,
 });
+
+it('discards prior-account poll results after logout and after another account loads', async () => {
+  const original = {
+    ...state(),
+    items: [],
+    email: 'prior-account@example.test',
+  };
+  original.jobs = [
+    {
+      attempt_id: itemId,
+      state: 'pending',
+      generation: 1,
+      error_code: null,
+      request_count: 0,
+    },
+  ];
+  const next = {
+    ...state(),
+    items: [],
+    jobs: [],
+    userId: otherWriter,
+    email: 'next-account@example.test',
+  };
+  let finishAfterLogout: (value: StudyState) => void = () => {};
+  let finishAfterLogin: (value: StudyState) => void = () => {};
+  vi.mocked(readState)
+    .mockReset()
+    .mockResolvedValueOnce(original)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAfterLogout = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAfterLogin = resolve;
+        }),
+    )
+    .mockResolvedValue(next);
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    Response.json({ signedOut: true }),
+  );
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  render(<Trainer />);
+  await screen.findByText('prior-account@example.test');
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(readState).toHaveBeenCalledTimes(3);
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  await screen.findByRole('heading', { name: 'Sign in with email' });
+  await act(async () => {
+    finishAfterLogout(original);
+  });
+  expect(screen.queryByText('prior-account@example.test')).toBeNull();
+  expect(localStorage.getItem('sweprep-account')).toBeNull();
+  act(() => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'sweprep-account',
+        newValue: next.userId,
+      }),
+    );
+  });
+  await screen.findByText('next-account@example.test');
+  await act(async () => {
+    finishAfterLogin(original);
+  });
+  expect(screen.queryByText('prior-account@example.test')).toBeNull();
+  expect(screen.queryByText('next-account@example.test')).not.toBeNull();
+  expect(localStorage.getItem('sweprep-account')).toBe(next.userId);
+});
 const renderEditor = (
   initial: StudyState,
   change: (action: StudyAction) => Promise<StudyState>,
@@ -92,6 +169,8 @@ const renderEditor = (
 
 beforeEach(async () => {
   await clearDrafts();
+  sessionStorage.clear();
+  localStorage.clear();
 });
 afterEach(() => {
   cleanup();
@@ -112,6 +191,98 @@ it('preserves two tab snapshots and never restores another account', async () =>
   expect(
     await readDraft('30000000-0000-4000-8000-000000000009', itemId, writerId),
   ).toBeNull();
+});
+
+it('forks duplicated documents into separate offline snapshots and restores each original snapshot on reload', async () => {
+  const initial = state();
+  initial.questions = [
+    {
+      id: questionId,
+      question_id: 'lifetime',
+      version: 1,
+      title: 'Object lifetime',
+      skill: 'C++',
+      content_blocks: [{ type: 'text', text: 'Explain ownership.' }],
+      content_review: 'candidate',
+    },
+  ];
+  vi.mocked(readState).mockResolvedValue(initial);
+  vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+  const first = render(<Trainer />);
+  const firstAnswer = await within(first.container).findByRole('textbox', {
+    name: 'Your answer',
+  });
+  const firstWriter = sessionStorage.getItem('sweprep-tab') ?? '';
+  fireEvent.change(firstAnswer, {
+    target: { value: 'Original tab offline answer' },
+  });
+  await waitFor(async () =>
+    expect((await readDraft(userId, itemId, firstWriter))?.answer).toBe(
+      'Original tab offline answer',
+    ),
+  );
+  const duplicate = render(<Trainer />);
+  const duplicateAnswer = await within(duplicate.container).findByRole(
+    'textbox',
+  );
+  const duplicateWriter = sessionStorage.getItem('sweprep-tab') ?? '';
+  expect(duplicateWriter).not.toBe(firstWriter);
+  fireEvent.change(duplicateAnswer, {
+    target: { value: 'Duplicate tab offline answer' },
+  });
+  await waitFor(async () =>
+    expect((await readDraft(userId, itemId, duplicateWriter))?.answer).toBe(
+      'Duplicate tab offline answer',
+    ),
+  );
+  expect((await readDraft(userId, itemId, firstWriter))?.answer).toBe(
+    'Original tab offline answer',
+  );
+  first.unmount();
+  duplicate.unmount();
+
+  sessionStorage.setItem('sweprep-tab', firstWriter);
+  const reloaded = render(<Trainer />);
+  await waitFor(() =>
+    expect(
+      (
+        within(reloaded.container).getByRole('textbox', {
+          name: 'Your answer',
+        }) as HTMLTextAreaElement
+      ).value,
+    ).toBe('Original tab offline answer'),
+  );
+  const reloadedWriter = sessionStorage.getItem('sweprep-tab') ?? '';
+  expect(reloadedWriter).not.toBe(firstWriter);
+  await waitFor(async () =>
+    expect((await readDraft(userId, itemId, reloadedWriter))?.answer).toBe(
+      'Original tab offline answer',
+    ),
+  );
+  reloaded.unmount();
+
+  const reloadedAgain = render(<Trainer />);
+  await waitFor(() =>
+    expect(
+      (
+        within(reloadedAgain.container).getByRole('textbox', {
+          name: 'Your answer',
+        }) as HTMLTextAreaElement
+      ).value,
+    ).toBe('Original tab offline answer'),
+  );
+  reloadedAgain.unmount();
+  sessionStorage.setItem('sweprep-tab', duplicateWriter);
+  const duplicateReloaded = render(<Trainer />);
+  await waitFor(() =>
+    expect(
+      (
+        within(duplicateReloaded.container).getByRole('textbox', {
+          name: 'Your answer',
+        }) as HTMLTextAreaElement
+      ).value,
+    ).toBe('Duplicate tab offline answer'),
+  );
 });
 
 it('adopts matching cloud data on a timer-owner rejection without forcing a draft choice', async () => {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import type { StudyAction, StudyState } from '@/lib/contracts/study';
 import { changeState, readState } from '@/lib/client/api';
@@ -17,27 +17,38 @@ export function Trainer() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [deviceId, setDeviceId] = useState('');
+  const [recoveryWriterId, setRecoveryWriterId] = useState<string>();
+  const authEpoch = useRef(0);
 
-  const update = useCallback((next: StudyState) => setState(next), []);
+  const update = useCallback((next: StudyState) => {
+    setState((current) => (current?.userId === next.userId ? next : current));
+  }, []);
   const change = useCallback(async (action: StudyAction) => {
+    const epoch = authEpoch.current;
     const result = await changeState(action);
+    if (epoch !== authEpoch.current) throw new Error('UNAUTHENTICATED');
     setState(result.state);
     return result.state;
   }, []);
 
   const load = useCallback(async () => {
+    const epoch = authEpoch.current;
     try {
       const next = await readState();
+      if (epoch !== authEpoch.current) return;
       if (next) {
         try {
           const previous = localStorage.getItem('sweprep-account');
           if (previous && previous !== next.userId) await clearDrafts();
+          if (epoch !== authEpoch.current) return;
           localStorage.setItem('sweprep-account', next.userId);
         } catch {}
       }
+      if (epoch !== authEpoch.current) return;
       setState(next);
       setError('');
     } catch (reason) {
+      if (epoch !== authEpoch.current) return;
       setError(
         reason instanceof Error ? reason.message : 'Study service unavailable.',
       );
@@ -45,21 +56,28 @@ export function Trainer() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     queueMicrotask(() => {
-      let id: string = crypto.randomUUID();
+      if (cancelled) return;
+      const id: string = crypto.randomUUID();
       try {
         const saved = z.uuid().safeParse(sessionStorage.getItem('sweprep-tab'));
-        if (saved.success) id = saved.data;
-        sessionStorage.setItem('sweprep-tab', id);
+        if (saved.success) setRecoveryWriterId(saved.data);
       } catch {}
       setDeviceId(id);
       void load();
     });
+    return () => {
+      cancelled = true;
+      authEpoch.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
     const accountChanged = (event: StorageEvent) => {
       if (event.key === 'sweprep-account') {
+        authEpoch.current += 1;
+        setBusy(false);
         setState(undefined);
         setSelected(null);
         void load();
@@ -81,6 +99,7 @@ export function Trainer() {
   }, [load, state?.jobs]);
 
   async function run(action: StudyAction) {
+    const epoch = authEpoch.current;
     setBusy(true);
     setError('');
     try {
@@ -92,11 +111,12 @@ export function Trainer() {
         setShowHistory(false);
       }
     } catch (reason) {
+      if (epoch !== authEpoch.current) return;
       setError(
         reason instanceof Error ? reason.message : 'Request unavailable.',
       );
     } finally {
-      setBusy(false);
+      if (epoch === authEpoch.current) setBusy(false);
     }
   }
 
@@ -107,10 +127,13 @@ export function Trainer() {
       )
     )
       return;
+    let epoch = ++authEpoch.current;
     setBusy(true);
     try {
       const response = await fetch('/api/study', { method: 'DELETE' });
+      if (epoch !== authEpoch.current) return;
       if (!response.ok) throw new Error('Sign-out failed. Please try again.');
+      epoch = ++authEpoch.current;
       setState(null);
       setSelected(null);
       try {
@@ -118,13 +141,14 @@ export function Trainer() {
       } catch {}
       await clearDrafts();
     } catch (reason) {
+      if (epoch !== authEpoch.current) return;
       setError(
         reason instanceof Error
           ? reason.message
           : 'Local drafts could not be cleared. Close this browser before switching accounts.',
       );
     } finally {
-      setBusy(false);
+      if (epoch === authEpoch.current) setBusy(false);
     }
   }
 
@@ -230,6 +254,7 @@ export function Trainer() {
                         item={item}
                         state={state}
                         deviceId={deviceId}
+                        recoveryWriterId={recoveryWriterId}
                         change={change}
                         updated={update}
                         leave={() => setShowHistory(true)}

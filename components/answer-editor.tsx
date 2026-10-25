@@ -20,6 +20,7 @@ type Props = {
   item: StudyItem;
   state: StudyState;
   deviceId: string;
+  recoveryWriterId?: string;
   change: (action: StudyAction) => Promise<StudyState>;
   updated: (state: StudyState) => void;
   leave: () => void;
@@ -33,6 +34,7 @@ export function AnswerEditor({
   item,
   state,
   deviceId,
+  recoveryWriterId,
   change,
   updated,
   leave,
@@ -51,15 +53,31 @@ export function AnswerEditor({
   const [localError, setLocalError] = useState(false);
   const [now, setNow] = useState(0);
   const localWrites = useRef(Promise.resolve());
+  const mounted = useRef(true);
   const saveSoon = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [serverOffset, setServerOffset] = useState(
     () => Date.parse(state.serverNow) - Date.now(),
   );
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const persist = useCallback((value: DraftSnapshot) => {
     localWrites.current = localWrites.current
       .catch(() => {})
-      .then(() => writeDraft(value));
+      .then(async () => {
+        if (!mounted.current) return;
+        await writeDraft(value);
+        if (mounted.current) {
+          try {
+            sessionStorage.setItem('sweprep-tab', value.writerId);
+          } catch {}
+        }
+      });
     localWrites.current
       .then(() => setLocalError(false))
       .catch(() => setLocalError(true));
@@ -73,8 +91,8 @@ export function AnswerEditor({
 
   useEffect(() => {
     let cancelled = false;
-    readDraft(state.userId, initial.id, deviceId)
-      .then((saved) => {
+    readDraft(state.userId, initial.id, deviceId, recoveryWriterId)
+      .then(async (saved) => {
         if (cancelled) return;
         const local = saved ? { ...saved, writerId: deviceId } : null;
         const value: DraftSnapshot = local ?? {
@@ -90,6 +108,8 @@ export function AnswerEditor({
           submission: null,
           timingDisconnected: false,
         };
+        await persist(value).catch(() => {});
+        if (cancelled) return;
         accept(value);
         if (
           local &&
@@ -130,7 +150,7 @@ export function AnswerEditor({
     return () => {
       cancelled = true;
     };
-  }, [accept, deviceId, initial, state.userId]);
+  }, [accept, deviceId, initial, persist, recoveryWriterId, state.userId]);
 
   const save = useCallback(
     async (action: CheckpointAction = 'save') => {
