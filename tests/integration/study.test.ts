@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import type { Database, Json } from '@/lib/contracts/database.types';
@@ -542,6 +542,113 @@ describe('real authenticated database', { concurrent: false }, () => {
           .single()
       ).data?.state,
     ).toBe('failed');
+  });
+
+  it('uses the second-request delay when malformed output is followed by a repair timeout', async () => {
+    const learner = await user();
+    const approvedQuestion = randomUUID();
+    sql(`insert into public.question_versions(id,question_id,version,title,skill,skill_id,content_blocks,content_review,prompt_version)
+      select '${approvedQuestion}','synthetic-repair-test',1,title,skill,skill_id,content_blocks,'approved',prompt_version from public.question_versions where id='${question}';
+      insert into private.rubrics(question_version_id,version,pass_score,required_claims,reference_answer)
+      select '${approvedQuestion}',version,pass_score,required_claims,reference_answer from private.rubrics where question_version_id='${question}'`);
+    const item = await learner.db.rpc('start_study', {
+      p_question: approvedQuestion,
+      p_timezone: 'UTC',
+    });
+    expect(item.error).toBeNull();
+    const attempt = await learner.db.rpc('submit_answer', {
+      p_item: item.data as string,
+      p_version: 0,
+      p_question: approvedQuestion,
+      p_answer: 'Synthetic provider-transport test.',
+      p_confidence: 'unsure',
+      p_assisted: false,
+      p_device: device,
+      p_key: randomUUID(),
+    });
+    expect(attempt.error).toBeNull();
+    for (const [name, value] of Object.entries({
+      GRADING_MODE: 'live',
+      CONTENT_REVIEW_APPROVED: 'true',
+      MODEL_EVAL_APPROVED: 'true',
+      PROVIDER_DATA_POLICY_APPROVED: 'true',
+      DEPLOYMENT_RECOVERY_APPROVED: 'true',
+      AI_DAILY_CAP_CENTS: '100',
+      AI_MONTHLY_CAP_CENTS: '2000',
+      OPENAI_MODEL: 'gpt-5.4-mini-2026-03-17',
+      OPENAI_API_KEY: 'synthetic-test-only-not-a-credential',
+    }))
+      vi.stubEnv(name, value);
+    const realFetch = globalThis.fetch;
+    let providerCalls = 0;
+    const transport = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input, init) => {
+        const target = new URL(
+          input instanceof Request ? input.url : String(input),
+        );
+        if (target.origin === 'https://api.openai.com') {
+          providerCalls++;
+          if (providerCalls > 1)
+            throw new DOMException('Synthetic repair timeout', 'AbortError');
+          return Response.json({
+            object: 'response',
+            id: 'synthetic-invalid-response',
+            status: 'completed',
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: '{"assessment":{"score":99}}',
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 2000, output_tokens: 50 },
+          });
+        }
+        if (target.origin !== new URL(url).origin)
+          throw new Error('Unexpected network destination');
+        return realFetch(input, init);
+      });
+    try {
+      expect(await recoverOne(admin)).toEqual({
+        processed: true,
+        outcome: 'PROVIDER_TIMEOUT',
+      });
+      expect(providerCalls).toBe(2);
+      const job = (
+        await learner.db
+          .from('grading_jobs')
+          .select()
+          .eq('attempt_id', attempt.data as string)
+          .single()
+      ).data;
+      expect(job).toMatchObject({
+        request_count: 2,
+        repair_used: true,
+        state: 'retry_wait',
+      });
+      expect(
+        Date.parse(job?.next_attempt_at ?? '') -
+          Date.parse(job?.updated_at ?? ''),
+      ).toBe(120000);
+      expect(
+        sql(
+          `select count(*) from private.provider_requests where attempt_id='${attempt.data}'`,
+        ),
+      ).toBe('2');
+    } finally {
+      transport.mockRestore();
+      vi.unstubAllEnvs();
+      sql(
+        `update public.grading_jobs set state='failed' where attempt_id='${attempt.data}'`,
+      );
+    }
   });
 
   it('preserves prior scored grades during failed/uncertain regrade and replays corrections and invalidation', async () => {

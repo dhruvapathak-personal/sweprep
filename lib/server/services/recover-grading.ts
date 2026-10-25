@@ -26,6 +26,7 @@ export async function recoverOne(db: SupabaseClient<Database>) {
     p_generation: work.job.generation,
     p_lease: work.job.lease_token,
   };
+  let requestCount = work.job.request_count;
   try {
     const mode = gradingMode();
     let result;
@@ -47,6 +48,7 @@ export async function recoverOne(db: SupabaseClient<Database>) {
           }),
         );
         if (!reservation) throw new Error('GRADING_UNAVAILABLE');
+        requestCount += 1;
         const response = await requestGrade(work, repair);
         if (
           response.actualCents !== undefined &&
@@ -85,7 +87,7 @@ export async function recoverOne(db: SupabaseClient<Database>) {
     );
     return { processed: true, outcome: validated.outcome };
   } catch (error) {
-    const failure = providerFailure(error, work.job.request_count);
+    const failure = providerFailure(error, requestCount);
     const failed = await db.rpc('fail_grading', {
       ...identity,
       p_error: failure.code,

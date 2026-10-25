@@ -61,11 +61,11 @@ export function simulatedGrade(work: GradingWork) {
   });
 }
 
-export function providerFailure(error: unknown, priorRequests: number) {
+export function providerFailure(error: unknown, requestCount: number) {
   if (error instanceof OpenAI.APIConnectionError)
     return {
       code: 'PROVIDER_TIMEOUT',
-      retrySeconds: priorRequests === 0 ? 30 : 120,
+      retrySeconds: requestCount <= 1 ? 30 : 120,
     };
   if (error instanceof OpenAI.APIError) {
     const retryable =
@@ -86,7 +86,7 @@ export function providerFailure(error: unknown, priorRequests: number) {
     return {
       code: retryable ? 'PROVIDER_TRANSIENT' : 'PROVIDER_REJECTED',
       retrySeconds: retryable
-        ? Math.min(86400, Math.max(priorRequests === 0 ? 30 : 120, delay))
+        ? Math.min(86400, Math.max(requestCount <= 1 ? 30 : 120, delay))
         : 0,
     };
   }

@@ -188,9 +188,13 @@ describe('grading boundaries without paid calls', () => {
     vi.stubGlobal('fetch', transport);
     await expect(requestGrade(work, false)).rejects.toThrow();
     expect(transport).toHaveBeenCalledTimes(1);
-    expect(providerFailure(new OpenAI.APIConnectionTimeoutError(), 0)).toEqual({
+    expect(providerFailure(new OpenAI.APIConnectionTimeoutError(), 1)).toEqual({
       code: 'PROVIDER_TIMEOUT',
       retrySeconds: 30,
+    });
+    expect(providerFailure(new OpenAI.APIConnectionTimeoutError(), 2)).toEqual({
+      code: 'PROVIDER_TIMEOUT',
+      retrySeconds: 120,
     });
     const error = new OpenAI.RateLimitError(
       429,
