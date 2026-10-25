@@ -1,0 +1,9 @@
+package-lock.json
+.next/
+node_modules/
+lib/contracts/database.types.ts
+supabase/.temp/
+supabase/.branches/
+docs/README.md
+docs/architecture-proposal.md
+docs/stack-and-standards.md
