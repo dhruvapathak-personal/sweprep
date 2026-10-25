@@ -146,7 +146,9 @@ Holding a database transaction open while grading ties up connections and locks.
 - **Deployment decision:** propose the host's managed scheduler invoking an authenticated reconciliation handler in the same application at least once per minute for an initial private beta. It claims pending, due-retry, and expired-lease work in bounded batches. This uses persistent state and a managed trigger, not a new custom queue service.
 - Confirm the selected host/plan supports that frequency, security, and sufficient function duration for the chosen model. Vercel or a comparable host is permitted by PDF p. 2; its free tier is not assumed sufficient.
 - If those limits fail, select a provider-managed durable execution facility before affected implementation. Do not invent a custom queue or assume that a detached promise continues after a serverless request ends.
-- Propose three total automatic executions per grading generation, with retry delays of 30 seconds then two minutes for timeouts/rate-limit/transient server errors, honoring a longer provider retry delay. Recovery leases must exceed the configured AI-call deadline. Invalid output gets at most one repair within that same budget; authorization/configuration failures fail immediately.
+- The application grading service owns retries. Disable OpenAI SDK automatic retries for this workflow with `maxRetries: 0`; routes, SDKs, and host recovery must not run independent retry loops.
+- Propose at most three outbound provider requests per grading generation, including any repair call. Before each dispatch, atomically record its request count and reserve its maximum estimated cost against the same application retry/spending budget. Host recovery resumes this persisted policy; it does not reset the budget.
+- Use retry delays of 30 seconds then two minutes for timeouts/rate-limit/transient server errors, honoring a longer provider retry delay. Recovery leases must exceed the configured AI-call deadline. Invalid output gets at most one repair within the same three-request budget; authorization/configuration failures fail immediately.
 - Give the learner an explicit retry action after exhaustion. It creates a new grading generation for the same attempt, subject to spending limits, not a new answer.
 
 **Alternatives and trade-offs**
@@ -160,6 +162,7 @@ Holding a database transaction open while grading ties up connections and locks.
 - Proposed real-database tests: `submit.same-key-same-attempt`, `submit.key-payload-conflict`, `submit.double-click-concurrent`, `grading.atomic-finalize`, and `grading.stale-lease-rejected`.
 - Inject termination after Transaction 1; close the browser. The managed recovery trigger must eventually grade or persist a visible terminal failure without losing the answer.
 - Inject an OpenAI timeout and a database failure after the AI response. Repeat finalization and assert one effective revision per generation and one set of derived effects.
+- Proposed `grading.single-retry-owner-budget` must count outbound requests, including repairs and recovery after termination: no generation can dispatch more than three, SDK retries are disabled, and every dispatch has a cost reservation.
 - Verify execution-limit, scheduler-frequency, and authentication behavior in the selected deployment environment. A polling-only test does not satisfy this criterion.
 - Require a computer-use video of pending, refresh, failure, and successful retry once a buildable UI exists.
 

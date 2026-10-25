@@ -49,6 +49,7 @@ SDK means **software development kit**. Here it is a provider-maintained library
    - Import it only inside the server AI adapter. Never enable browser execution with a secret API key.
    - Prefer the provider's current Responses API for new structured grading, with a pinned task/model configuration validated against fixtures. Select the model separately from the SDK version.
    - Its networking/retry conveniences do not provide durable application execution, guarantee factual truth, or make database writes idempotent.
+   - For grading, disable automatic SDK retries with `maxRetries: 0`. The application grading service alone controls retries and reserves every outbound request, including repairs, within one persisted retry/cost budget. Do not let SDK and application retries multiply each other.
 
 Use the Next.js [`server-only` import guard](https://nextjs.org/docs/app/getting-started/server-and-client-components#preventing-environment-poisoning) for secret-bearing modules. It helps catch accidental client imports; it does not replace authorization or key management.
 
