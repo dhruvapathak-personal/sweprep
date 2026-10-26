@@ -5,9 +5,9 @@
   "type": "module",
   "engines": {
     "node": ">=24.0.0 <25",
-    "npm": "11.3.0"
+    "npm": "11.19.1"
   },
-  "packageManager": "npm@11.3.0",
+  "packageManager": "npm@11.19.1",
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",

@@ -6,7 +6,7 @@ MVP 1 is a text-answer study loop: email-link sign-in, five candidate questions,
 
 ## Local setup
 
-Use Node **24.0.0**, npm **11.3.0**, and a working Docker daemon. Dependencies and Supabase CLI **2.122.0** are pinned in `package-lock.json`. Routine tests make no paid API calls.
+Use Node **24.0.0**, npm **11.19.1**, and a working Docker daemon. Dependencies and Supabase CLI **2.122.0** are pinned in `package-lock.json`. Routine tests make no paid API calls.
 
 ```bash
 npm ci
@@ -67,9 +67,13 @@ Simulation requires an explicit flag and loopback application/database URLs. It 
 
 ## Devcontainer support
 
-The optional `.devcontainer` uses pinned Node 24.0.0 without GPU, TUN, personal directories, SSH mounts or a privileged Docker socket. It supports application editing/building. Run Supabase on the host, not inside this image.
+The `.devcontainer` targets rootless Podman on WSL Ubuntu (host UID 1000). It installs the remote Podman CLI (`podman-remote`, linked as `podman`) and points `CONTAINER_HOST` and `DOCKER_HOST` at the host's rootless Podman API socket, so `npm run db:start`, the app, and the worker run inside the container while Supabase's containers run on the host engine. Enable the socket once on the host:
 
-The default container's loopback is not the host's loopback. For Docker, configure a local override mapping `host.docker.internal` to `host-gateway`, then set the container's server-side Supabase URL to `http://host.docker.internal:54321`; keep grading disabled in that topology because simulation permits loopback only. The browser talks to the Next API, not directly to Supabase. The local auth callback still targets the forwarded app port. Full loopback simulation and Docker-backed integration tests use the native host commands above. Docker image construction and host-service reachability are tested separately; Podman, WSL, and native phone execution are not verified.
+```bash
+systemctl --user enable --now podman.socket
+```
+
+The container mounts `/run/user/1000/podman` and uses `--network=host`, so Supabase's published ports stay on `127.0.0.1` and loopback simulation works unchanged. Socket access lets code in the container control every container your host user owns; never expose that API over TCP. Bind-mount sources requested through the socket resolve on the host, not in the container. Supabase via Podman is supported upstream but this repository's suite has not yet been verified on it.
 
 ## Design sources
 
