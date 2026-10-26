@@ -1,20 +1,61 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { openSync } from 'node:fs';
+import { openSync, readFileSync, unlinkSync } from 'node:fs';
 
-const status = JSON.parse(
-  execFileSync('npx', ['--no-install', 'supabase', 'status', '-o', 'json'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }),
-);
-if (new URL(status.API_URL).hostname !== '127.0.0.1')
+let prepared;
+try {
+  prepared = JSON.parse(readFileSync('.supabase-test.json', 'utf8'));
+  unlinkSync('.supabase-test.json');
+} catch {
   throw new Error(
-    'Integration tests require the isolated local Supabase stack.',
+    'On the host, run python3 scripts/local-stack.py prepare-test before each integration run.',
   );
-execFileSync('npx', ['--no-install', 'supabase', 'db', 'reset', '--local'], {
-  stdio: 'inherit',
+}
+const { status, preparedAt } = prepared;
+let database;
+try {
+  const api = new URL(status.API_URL);
+  database = new URL(status.DB_URL);
+  if (
+    typeof preparedAt !== 'number' ||
+    Date.now() / 1000 - preparedAt < 0 ||
+    Date.now() / 1000 - preparedAt > 1800 ||
+    api.origin !== 'http://127.0.0.1:54321' ||
+    api.pathname !== '/' ||
+    api.username ||
+    api.password ||
+    api.search ||
+    api.hash ||
+    database.protocol !== 'postgresql:' ||
+    database.hostname !== '127.0.0.1' ||
+    database.port !== '54322' ||
+    database.pathname !== '/postgres' ||
+    database.username !== 'postgres' ||
+    database.search ||
+    database.hash ||
+    !status.ANON_KEY ||
+    !status.SERVICE_ROLE_KEY
+  )
+    throw new Error();
+} catch {
+  throw new Error('Fresh isolated loopback Supabase preparation is required.');
+}
+const sqlCheck = spawnSync('psql', ['-X', '-w', '-Atc', 'select 1'], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    PGHOST: database.hostname,
+    PGPORT: database.port,
+    PGDATABASE: 'postgres',
+    PGUSER: 'postgres',
+    PGPASSWORD: decodeURIComponent(database.password),
+    PGCONNECT_TIMEOUT: '5',
+  },
 });
+if (sqlCheck.status !== 0 || sqlCheck.stdout.trim() !== '1')
+  throw new Error(
+    'Local SQL is unreachable. Use the app container with Linux host networking and psql.',
+  );
 const recoverySecret = randomBytes(32).toString('hex');
 const baseUrl = 'http://localhost:3001';
 const log = openSync('/tmp/sweprep-integration-app.log', 'w', 0o600);
@@ -67,6 +108,12 @@ try {
         TEST_SERVICE_KEY: status.SERVICE_ROLE_KEY,
         TEST_APP_URL: baseUrl,
         TEST_RECOVERY_SECRET: recoverySecret,
+        PGHOST: database.hostname,
+        PGPORT: database.port,
+        PGDATABASE: 'postgres',
+        PGUSER: 'postgres',
+        PGPASSWORD: decodeURIComponent(database.password),
+        PGCONNECT_TIMEOUT: '5',
       },
     },
   );

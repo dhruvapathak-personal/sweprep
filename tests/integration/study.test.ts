@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
@@ -36,20 +36,8 @@ const scored = {
 
 function sql(statement: string) {
   return execFileSync(
-    'docker',
-    [
-      'exec',
-      'supabase_db_sweprep',
-      'psql',
-      '-U',
-      'postgres',
-      '-d',
-      'postgres',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-Atc',
-      statement,
-    ],
+    'psql',
+    ['-X', '-w', '-v', 'ON_ERROR_STOP=1', '-Atc', statement],
     { encoding: 'utf8' },
   ).trim();
 }
@@ -57,14 +45,18 @@ function sql(statement: string) {
 async function user() {
   const db = client();
   const email = `integration-${randomUUID()}@example.test`;
-  const password = randomBytes(24).toString('hex');
-  const created = await admin.auth.admin.createUser({
+  expect(
+    (await admin.auth.admin.createUser({ email, email_confirm: true })).error,
+  ).toBeNull();
+  const created = await admin.auth.admin.generateLink({
+    type: 'magiclink',
     email,
-    password,
-    email_confirm: true,
   });
   expect(created.error).toBeNull();
-  const signed = await db.auth.signInWithPassword({ email, password });
+  const signed = await db.auth.verifyOtp({
+    type: 'magiclink',
+    token_hash: created.data.properties?.hashed_token ?? '',
+  });
   expect(signed.error).toBeNull();
   return { db, id: signed.data.user?.id ?? '' };
 }
@@ -962,7 +954,10 @@ describe('real authenticated database', { concurrent: false }, () => {
 
   it('verifies real HTTP cookies, rejects forged requests and recovers without a browser', async () => {
     const origin = process.env.TEST_APP_URL ?? '';
-    const cookieHeader = async (db: SupabaseClient<Database>) => {
+    const cookieHeader = async (
+      db: SupabaseClient<Database>,
+      expired = false,
+    ) => {
       const session = (await db.auth.getSession()).data.session;
       if (!session) throw new Error('Missing test session');
       const jar = new Map<string, string>();
@@ -974,18 +969,31 @@ describe('real authenticated database', { concurrent: false }, () => {
         },
       });
       expect((await ssr.auth.setSession(session)).error).toBeNull();
+      if (expired) {
+        const entry = [...jar].find(([name]) => name.endsWith('-auth-token'));
+        if (!entry) throw new Error('Missing session cookie');
+        const [name, value] = entry;
+        const stored = JSON.parse(
+          Buffer.from(value.slice(7), 'base64url').toString(),
+        );
+        jar.set(
+          name,
+          `base64-${Buffer.from(JSON.stringify({ ...stored, expires_at: 1 })).toString('base64url')}`,
+        );
+      }
       return [...jar].map(([name, value]) => `${name}=${value}`).join('; ');
     };
     const owner = await user(),
       outsider = await user();
     const item = await start(owner.db);
-    const ownerCookie = await cookieHeader(owner.db),
+    const ownerCookie = await cookieHeader(owner.db, true),
       outsiderCookie = await cookieHeader(outsider.db);
     expect((await fetch(`${origin}/api/study`)).status).toBe(401);
     const stateResponse = await fetch(`${origin}/api/study`, {
       headers: { cookie: ownerCookie },
     });
     expect(stateResponse.status).toBe(200);
+    expect(stateResponse.headers.get('set-cookie')).toContain('-auth-token=');
     expect(stateResponse.headers.get('cache-control')).toContain('no-store');
     expect(
       stateSchema
@@ -1072,5 +1080,78 @@ describe('real authenticated database', { concurrent: false }, () => {
     expect(
       (await owner.db.from('attempt_grades').select()).data?.[0].simulated,
     ).toBe(true);
+    const refreshed = await owner.db.auth.refreshSession();
+    expect(refreshed.error).toBeNull();
+    expect(refreshed.data.user?.id).toBe(owner.id);
+    const refreshedCookie = await cookieHeader(owner.db);
+    const resumed = await fetch(`${origin}/api/study`, {
+      headers: { cookie: refreshedCookie },
+    });
+    const resumedState = stateSchema.parse(await resumed.json());
+    expect(resumedState.userId).toBe(owner.id);
+    expect(resumedState.attempts).toHaveLength(1);
+    const logout = await fetch(`${origin}/api/study`, {
+      method: 'DELETE',
+      headers: { origin, cookie: refreshedCookie },
+    });
+    expect(logout.status).toBe(200);
+    expect(logout.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect((await owner.db.auth.refreshSession()).error).not.toBeNull();
+    expect((await fetch(`${origin}/api/study`)).status).toBe(401);
+  });
+
+  it('creates an unauthenticated Google PKCE flow with the SSR SDK', async () => {
+    const jar = new Map<string, string>();
+    const ssr = createServerClient<Database>(url, key, {
+      cookies: {
+        getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+        setAll: (values) =>
+          values.forEach(({ name, value }) => jar.set(name, value)),
+      },
+    });
+    const redirectTo = 'http://localhost:3000/auth/callback';
+    const result = await ssr.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo, skipBrowserRedirect: true },
+    });
+    expect(result.error).toBeNull();
+    const target = new URL(result.data.url ?? '');
+    expect(target.origin).toBe(new URL(url).origin);
+    expect(target.searchParams.get('provider')).toBe('google');
+    expect(target.searchParams.get('redirect_to')).toBe(redirectTo);
+    expect(target.searchParams.get('code_challenge_method')).toBe('s256');
+    expect(target.searchParams.get('code_challenge')).toBeTruthy();
+    expect(
+      [...jar.keys()].some((name) => name.endsWith('-code-verifier')),
+    ).toBe(true);
+    expect((await ssr.auth.getUser()).data.user).toBeNull();
+  });
+
+  it('rejects legacy email login and handles unconfigured Google and invalid callbacks over HTTP', async () => {
+    const origin = process.env.TEST_APP_URL ?? '';
+    const legacy = await fetch(`${origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { origin, 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'not-sent@example.test' }),
+    });
+    expect(legacy.status).toBe(400);
+    const unavailable = await fetch(`${origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { origin, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(unavailable.status).toBe(503);
+    for (const [query, result] of [
+      ['error=access_denied&error_description=untrusted', 'denied'],
+      ['code=invalid-pkce-code&next=https://other.example.test', 'failed'],
+    ]) {
+      const response = await fetch(`${origin}/auth/callback?${query}`, {
+        redirect: 'manual',
+      });
+      expect(response.headers.get('location')).toBe(
+        `${origin}/?auth=${result}`,
+      );
+      expect(response.headers.get('cache-control')).toContain('no-store');
+    }
   });
 });

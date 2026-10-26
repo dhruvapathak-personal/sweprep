@@ -1,23 +1,13 @@
 {
   "name": "SWE Trainer",
-  "build": { "dockerfile": "Dockerfile" },
-  "remoteUser": "dhruva",
+  "build": { "dockerfile": "Dockerfile", "target": "app" },
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
   "workspaceFolder": "/workspace/sweprep",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/sweprep,type=bind",
   "forwardPorts": [3000],
-  "initializeCommand": "test -S /run/user/1000/podman/podman.sock || systemctl --user start podman.socket",
   "postCreateCommand": "npm ci",
-  "containerEnv": {
-    "CONTAINER_HOST": "unix:///run/podman-host/podman.sock",
-    "DOCKER_HOST": "unix:///run/podman-host/podman.sock"
-  },
-  "runArgs": [
-    "--userns=keep-id:uid=1000,gid=1000",
-    "--init",
-    "--network=host",
-    "--device=/dev/net/tun",
-    "--device=nvidia.com/gpu=all"
-  ],
+  "runArgs": ["--init", "--network=host"],
   "customizations": {
     "vscode": {
       "settings": {
@@ -30,14 +20,5 @@
         "ms-vscode-remote.remote-containers"
       ]
     }
-  },
-  "mounts": [
-    "source=/home/dhruva/.ssh,target=/home/dhruva/.ssh,type=bind",
-    "source=/home/dhruva/projects,target=/home/dhruva/projects,type=bind",
-    "source=/mnt/c,target=/mnt/c,type=bind",
-    "source=/run/user/1000/podman,target=/run/podman-host,type=bind",
-    "source=company-infra-vscode-server,target=/home/dhruva/.vscode-server,type=volume",
-    "source=company-infra-copilot-state,target=/home/dhruva/.copilot,type=volume",
-    "source=company-infra-codex-state,target=/home/dhruva/.codex,type=volume"
-  ]
+  }
 }

@@ -7,3 +7,5 @@ coverage/
 *.tsbuildinfo
 supabase/.temp/
 supabase/.branches/
+.supabase-test.json
+__pycache__/

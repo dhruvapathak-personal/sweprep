@@ -1,0 +1,16 @@
+{
+  "name": "SWE Trainer · personal tools (opt-in)",
+  "build": { "dockerfile": "../Dockerfile", "target": "personal-tools" },
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
+  "workspaceFolder": "/workspace/sweprep",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/sweprep,type=bind",
+  "forwardPorts": [3000],
+  "postCreateCommand": "npm ci",
+  "runArgs": ["--init", "--network=host"],
+  "mounts": [
+    "source=sweprep-editor-state,target=/home/node/.vscode-server,type=volume",
+    "source=sweprep-copilot-state,target=/home/node/.copilot,type=volume",
+    "source=sweprep-codex-state,target=/home/node/.codex,type=volume"
+  ]
+}

@@ -1,32 +1,63 @@
 # SWE Trainer
 
-MVP 1 is a text-answer study loop: email-link sign-in, five candidate questions, cloud and local drafts, explicit conflict resolution, acknowledged timing, immutable submissions, durable grading recovery and history.
+MVP 1 is a text-answer study loop: Google-only sign-in, five candidate questions, cloud and local drafts, explicit conflict resolution, acknowledged timing, immutable submissions, durable grading recovery and history.
 
 **This is a local demonstration, not a validated interview assessment.** All five questions and 25 example assessments await human review. No live model evaluation or paid provider call has been performed. Voice, vocabulary practice, adaptive sessions, charts, offline question loading and PWA installation are not implemented.
 
 ## Local setup
 
-Use Node **24.0.0**, npm **11.19.1**, and a working Docker daemon. Dependencies and Supabase CLI **2.122.0** are pinned in `package-lock.json`. Routine tests make no paid API calls.
+The supported local topology is **Linux/WSL2 with host networking**. The host runs the full Supabase stack; the app container uses its published loopback ports. The app container has no engine socket or engine client. Host Node/npm is not required. Routine tests make no paid API calls.
+
+On host WSL Ubuntu, install rootless Podman, Python **3.10+**, and the **standalone native Supabase CLI 2.122.0**. Install the CLI release binary or Linux package from [the official release](https://github.com/supabase/cli/releases/tag/v2.122.0), verify its published checksum, and put `supabase` on the host PATH. Do not use `npx`, npm, or a containerized CLI on the host. Verify `python3 --version`, `supabase --version`, and `podman info` before proceeding.
+
+The host CLI talks to the host user's rootless Podman API. Enable it and point the CLI at that local Unix socket in the **host terminal only**:
+
+```bash
+systemctl --user enable --now podman.socket
+export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock"
+python3 scripts/local-stack.py start
+python3 scripts/local-stack.py reset
+python3 scripts/local-stack.py env
+```
+
+The helper checks the native CLI version, suppresses credentials, and refuses non-loopback status before resets or configuration export. `reset` deletes local study data. `env` creates `.env.local` with owner-only permissions and refuses to overwrite any existing file. It enables local simulation with zero provider budgets. Never commit or share that file.
+
+Open this repository in the default `.devcontainer/devcontainer.json` with your Dev Containers client (set its host engine path to `podman` for rootless Podman). The client needs to control the host engine; the resulting app container does not. `postCreateCommand` runs `npm ci`. Inside the app container:
 
 ```bash
 npm ci
-npm run db:start
-npm run db:reset
-npm run setup:local
 npm run dev
 ```
 
-Open http://localhost:3000. Request a sign-in link using a test email address, then open the latest message in Mailpit at http://localhost:54324. Open the link in the same browser that requested it; the callback uses PKCE. Local email is not delivered externally.
+Node **24.22.1** and its bundled npm **11.19.1** match `.nvmrc`, CI and the lockfile. No global npm override is needed. Open http://localhost:3000 and select **Continue with Google** after completing provider setup below. Until then, the actual login screen shows an unavailable message; it does not bypass authentication. Mailpit is not a product login path.
 
 In a second terminal, run `npm run worker`. This independent runner invokes the authenticated recovery endpoint every ten seconds. Closing the study tab does not stop it. Without the runner, submitted answers remain safely pending. `npm run worker -- --once` processes at most one due job.
 
-`setup:local` writes `.env.local` with owner-only permissions and refuses to overwrite it. Never commit or share that file. It enables only loopback simulation with zero provider budgets; it needs no OpenAI key. Do not run local resets against a hosted database: reset deletes local study data.
+Host lifecycle commands stay in the host terminal: `python3 scripts/local-stack.py stop`, `reset`, `env`, `prepare-test`, and `types`. Run dependency, app, worker and test commands only inside the app container. If the host engine is Docker instead of Podman, use its normal host CLI configuration; do not export a Podman `DOCKER_HOST`.
+
+## Google provider setup
+
+There are two distinct redirect boundaries:
+
+| Boundary                                                   | Local                                     | Production                                                                                                                        |
+| ---------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Google → Supabase (Google Console authorized redirect URI) | `http://127.0.0.1:54321/auth/v1/callback` | `https://<project-ref>.supabase.co/auth/v1/callback` (use the exact provider callback shown by Supabase for a custom auth domain) |
+| Supabase → app (Supabase redirect allowlist)               | `http://localhost:3000/auth/callback`     | `https://<app-domain>/auth/callback`                                                                                              |
+
+1. Create Google OAuth **Web application** credentials and configure the consent screen. Add the exact Google-to-Supabase redirect above; add your account as a test user while the consent screen is in Testing. Use only basic identity/email/profile scopes, not Gmail or Drive. Use separate local and production credentials.
+2. For local use, securely supply `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID` and `SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET` to the **host CLI environment** using your secret manager. Do not paste credentials into shell history, the repository, screenshots or logs. In `supabase/config.toml`, set only `[auth.external.google].enabled` to `true`, then stop/start the host stack to apply it. Keep the credential-free default `false` in commits. No Google secret enters the app's public environment.
+3. For production, enable Google in Supabase Dashboard with the production credentials. Set Site URL to `https://<app-domain>` and allow only the exact app callback, without wildcard destinations. Disable email signup/login for the product. Set server `APP_URL` to that same origin; paths, queries, credentials and non-local HTTP origins are rejected. Use the production Supabase URL/publishable key; keep service-role/recovery/provider secrets server-only.
+4. Sign in from the browser that started the flow: the existing Supabase SSR client stores the PKCE verifier and exchanges the callback code into the usual cookies. Denial, missing/invalid codes and provider failures show bounded messages; provider descriptions and user-supplied return URLs are never reflected.
+
+**Existing accounts:** keep the same Supabase project. Supabase automatically links eligible verified same-email identities; the app never merges users by email or rewrites ownership. Before live rollout, record an existing email account's `auth.users.id` and a saved draft/attempt, sign in with its verified Google identity, confirm the ID and history are unchanged, refresh/reload, then sign out and confirm access is denied. Also verify a different Google account cannot read that history. If Supabase does not link the expected identity, stop and investigate provider verification/identity state; do not create an app-side merge.
+
+**Outstanding manual checks:** actual Google consent, existing-account identity linking and production redirects need requester-owned Google credentials. They cannot be proved by mocked OAuth responses or password fixtures. Database/HTTP tests independently check SSR sessions, refresh, logout and cross-user isolation.
 
 ## Demonstration flow and durability
 
 - Choose a question, write an answer, select confidence and record any assistance. Use **Resume timer** to start acknowledged timing; **Pause** stops it.
 - Edits save to IndexedDB, then to the cloud after two idle seconds or a ten-second checkpoint. The UI distinguishes cloud acknowledgment from a device-only snapshot. **Save to cloud** retries explicitly.
-- For another device or isolated browser context, request another email link for the same account. Only the latest acknowledged revision transfers. A stale write shows both copies, confidence and assistance; selecting a copy never silently merges text.
+- For another device or isolated browser context, sign in with the same Google account. Only the latest acknowledged revision transfers. A stale write shows both copies, confidence and assistance; selecting a copy never silently merges text.
 - Disconnect an already loaded tab to edit locally. Reconnect before submitting. Offline time does not enter totals. A full offline page load is not supported.
 - The timer has one server-held owner with a thirty-second lease. Explicit takeover discards the old owner's unacknowledged tail. Browser closure, connection loss and lease expiry can conservatively undercount time.
 - Submit confirms an immutable answer. A lost acknowledgment retries the exact payload and idempotency key. A failed or uncertain grade is not a wrong answer. Regrading appends revisions and retains an earlier valid score until a valid correction or explicit invalidation.
@@ -41,11 +72,23 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
-npm run test:integration
-npm run db:types
 ```
 
-Integration tests require Docker, the running local Supabase stack and a successful production build. They reset the local database, start a temporary compiled app on port 3001, then test real Auth, Postgres/RLS, concurrent submission, timer ownership, revision replay, request limits, budget reservations and authenticated HTTP recovery. They do not silently skip missing services. Stop any development recovery runner before testing so it cannot claim fixture jobs. CI runs these same checks and verifies generated database types.
+Before **each** integration run, stop recovery workers and run on the **host**:
+
+```bash
+python3 scripts/local-stack.py prepare-test
+```
+
+Then run **inside the app container**:
+
+```bash
+npm run test:integration
+```
+
+`prepare-test` performs a clean CLI reset and writes a private `.supabase-test.json` handoff. The runner consumes it once, rejects preparations older than 30 minutes or non-loopback endpoints, checks SQL reachability, and starts the compiled app on port 3001. Tests use `psql` over the local published database port, not `docker exec`; no engine access is needed. Missing preparation, SQL or services fails the run rather than skipping tests. Do not run a worker, app writes or parallel suites between reset and testing. Privileged Auth admin-generated verification tokens create isolated test sessions without enabling product email login; they are not Google consent evidence.
+
+On the host, `python3 scripts/local-stack.py types` regenerates database types using the native CLI. `python3 -m unittest discover -s tests/setup -p 'test_*.py'` checks host setup safeguards. CI runs these steps and checks for generated-type drift, in addition to real Auth, Postgres/RLS, concurrent submission, timer ownership, revision replay, request limits, budget reservations and HTTP recovery tests.
 
 The unit suite covers review graduation at both 30 elapsed UTC days **and** ten consecutive unassisted successes, relapse, neutral unscored outcomes, separate evidence tracks, local-day/DST timing, IndexedDB conflicts and the real SDK using mocked provider transport. Those mocks are not model-quality evidence.
 
@@ -59,7 +102,7 @@ Live grading stays disabled until a human completes all of these gates:
 2. Run an explicitly approved, budgeted model evaluation. Require no pass/fail reversals, all ambiguous examples unscored and all scores within reviewed ranges. No paid evaluation command is shipped or run in this slice.
 3. Approve provider retention/data policy. Do not submit confidential employer content or credentials. The adapter requests `store: false`; this does not establish the provider's complete retention policy.
 4. Select and verify a hosted scheduler invoking `POST /api/internal/recover` at least once per minute with `Authorization: Bearer <RECOVERY_SECRET>`. Each invocation processes one job. Verify capacity and request duration for two possible 30-second calls plus finalization within a 90-second lease. A browser poll is not a worker. No hosted scheduler is configured or verified here.
-5. Supply server-side credentials, the exact evaluated model snapshot and each approval flag listed in `.env.example`. Set `GRADING_MODE=live`, positive budgets no higher than **100 cents/day** and **2000 cents/month**, and the appropriate Supabase auth redirect/SMTP settings.
+5. Supply server-side credentials, the exact evaluated model snapshot and each approval flag listed in `.env.example`. Set `GRADING_MODE=live`, positive budgets no higher than **100 cents/day** and **2000 cents/month**, and complete the Google/Supabase redirect setup above.
 
 The implemented model adapter is pinned to `gpt-5.4-mini-2026-03-17`; compatibility and quality remain unverified against the live provider. Cost uses the documented $0.75/$4.50 per million input/output tokens and reserves ten cents before each dispatch. Unknown usage retains that reservation. Each generation allows at most three outbound requests, including one repair, with SDK retries disabled. Retry delays are 30 seconds then 120 seconds, or longer provider advice. New generations share global cost caps and a per-user limit of 30 grading requests/hour; an attempt has at most ten generations. A timeout may still incur a provider charge.
 
@@ -67,13 +110,21 @@ Simulation requires an explicit flag and loopback application/database URLs. It 
 
 ## Devcontainer support
 
-The `.devcontainer` targets rootless Podman on WSL Ubuntu (host UID 1000). It installs the remote Podman CLI (`podman-remote`, linked as `podman`) and points `CONTAINER_HOST` and `DOCKER_HOST` at the host's rootless Podman API socket, so `npm run db:start`, the app, and the worker run inside the container while Supabase's containers run on the host engine. Enable the socket once on the host:
+The default app target has Git, CA certificates and the PostgreSQL client. It runs as generic user `node`, with Dev Containers' UID update enabled; it does not assume your host UID, username or personal paths. Linux `--network=host` deliberately keeps both app and Supabase on loopback. Do not replace loopback with `host.containers.internal`, a LAN address or a hosted URL to get tests/simulation working. The safety guard rejects those. This is not a claim of macOS/Windows Docker Desktop networking support.
 
-```bash
-systemctl --user enable --now podman.socket
-```
+For rootless Podman, use a current Dev Containers client that supports UID synchronization. If bind-mount ownership needs user-namespace mapping, configure `userns="keep-id"` in your **host** `~/.config/containers/containers.conf` (or add `--userns=keep-id` to a local-only config). Do not hardcode host UID 1000. Engine socket environment variables are host-only; never add them or socket mounts to either container config.
 
-The container mounts `/run/user/1000/podman` and uses `--network=host`, so Supabase's published ports stay on `127.0.0.1` and loopback simulation works unchanged. Socket access lets code in the container control every container your host user owns; never expose that API over TCP. Bind-mount sources requested through the socket resolve on the host, not in the container. Supabase via Podman is supported upstream but this repository's suite has not yet been verified on it.
+### Optional personal tools
+
+Explicitly select `.devcontainer/personal/devcontainer.json` with your Dev Containers client (for the CLI: `devcontainer up --workspace-folder . --config .devcontainer/personal/devcontainer.json`). It builds the `personal-tools` target: unprivileged Bubblewrap, socat, slirp4netns, Python/venv, SSH client and Pixi **0.55.0**, plus named editor/Copilot/Codex state volumes. Authentication for those tools is your own opt-in; no credentials are copied from the host.
+
+Other personal integrations require a **local-only** config derived from this optional config:
+
+- Add `"source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly"` only when you intentionally want host SSH files available. Prefer an agent forwarded by your editor; confirm host path and permissions first.
+- Add only the personal project or Windows path mounts you actually use, sourced from your own `${localEnv:HOME}` or explicit environment variables. The baseline never requires `/mnt/c` or another user's home.
+- For NVIDIA CDI, add `"--device=nvidia.com/gpu=all"` only after configuring the host driver/CDI. For a tool that really needs TUN, add `"--device=/dev/net/tun"` only after checking its permission requirements. Neither is required or enabled for study, Supabase, Python, Pixi or agent tools. Unprivileged sandbox tools remain subject to host user-namespace/AppArmor policy; this config grants no privileged mode, extra capabilities or sudo.
+
+No optional configuration needs or authorizes an engine socket.
 
 ## Design sources
 

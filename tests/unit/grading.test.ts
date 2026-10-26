@@ -140,6 +140,17 @@ describe('grading boundaries without paid calls', () => {
     vi.stubEnv('GRADING_MODE', 'simulated');
     vi.stubEnv('ALLOW_LOCAL_SIMULATION', 'true');
     expect(gradingMode()).toBe('simulated');
+    vi.stubEnv(
+      'NEXT_PUBLIC_SUPABASE_URL',
+      'http://host.containers.internal:54321',
+    );
+    expect(() => gradingMode()).toThrow('SIMULATION_NOT_LOCAL');
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co');
+    expect(() => gradingMode()).toThrow('SIMULATION_NOT_LOCAL');
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'http://127.0.0.1:54321');
+    vi.stubEnv('DEPLOYMENT_ENV', 'production');
+    expect(() => gradingMode()).toThrow('SIMULATION_NOT_LOCAL');
+    vi.stubEnv('DEPLOYMENT_ENV', '');
     vi.stubEnv('APP_URL', 'https://trainer.example.test');
     expect(() => gradingMode()).toThrow('SIMULATION_NOT_LOCAL');
     vi.stubEnv('AI_DAILY_CAP_CENTS', '101');

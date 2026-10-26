@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24.0.0 <25",
+    "node": ">=24.22.1 <25",
     "npm": "11.19.1"
   },
   "packageManager": "npm@11.19.1",
@@ -18,11 +18,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
     "test:integration": "node scripts/integration.mjs",
-    "db:start": "node scripts/start-local.mjs",
-    "db:reset": "supabase db reset",
-    "db:types": "supabase gen types typescript --local > lib/contracts/database.types.ts",
-    "worker": "node --env-file=.env.local scripts/recovery.mjs",
-    "setup:local": "node scripts/local-env.mjs"
+    "worker": "node --env-file=.env.local scripts/recovery.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
@@ -48,7 +44,6 @@
     "jsdom": "26.1.0",
     "postcss": "8.5.31",
     "prettier": "3.9.10",
-    "supabase": "2.122.0",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
     "vitest": "5.0.5"

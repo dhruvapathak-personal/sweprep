@@ -17,13 +17,17 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm install --global npm@11.19.1
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
       - run: npm ci
+      - run: python3 -m unittest discover -s tests/setup -p 'test_*.py'
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm run db:start
+      - run: python3 scripts/local-stack.py start
+      - run: python3 scripts/local-stack.py prepare-test
       - run: npm run test:integration
-      - run: npm run db:types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts
+      - run: python3 scripts/local-stack.py types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts
