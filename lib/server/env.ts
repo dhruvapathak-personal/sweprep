@@ -4,7 +4,19 @@ import { z } from 'zod';
 const serverSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
-  APP_URL: z.url(),
+  APP_URL: z.url().refine((value) => {
+    const url = new URL(value);
+    return (
+      !url.username &&
+      !url.password &&
+      url.pathname === '/' &&
+      !url.search &&
+      !url.hash &&
+      (url.protocol === 'https:' ||
+        (url.protocol === 'http:' &&
+          ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)))
+    );
+  }),
   GRADING_MODE: z.enum(['disabled', 'simulated', 'live']).default('disabled'),
   ALLOW_LOCAL_SIMULATION: z.enum(['true', 'false']).default('false'),
   CONTENT_REVIEW_APPROVED: z.enum(['true', 'false']).default('false'),

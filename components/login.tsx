@@ -1,11 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export function Login() {
-  const [email, setEmail] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const auth = new URLSearchParams(window.location.search).get('auth');
+    queueMicrotask(() => {
+      if (auth === 'denied')
+        setStatus('Google sign-in was cancelled. You can try again.');
+      else if (auth === 'failed')
+        setStatus('This sign-in could not be completed. Please try again.');
+    });
+  }, []);
   return (
     <div className="login-layout">
       <section className="intro">
@@ -27,47 +35,35 @@ export function Login() {
       </section>
       <section className="panel login-panel" aria-labelledby="login-title">
         <span className="eyebrow">Your private study history</span>
-        <h2 id="login-title">Sign in with email</h2>
+        <h2 id="login-title">Sign in with Google</h2>
         <p>
-          No password to remember. We will send a secure sign-in link. Open it
-          in this browser.
+          Use your Google account to keep your practice and history together.
         </p>
         <form
           onSubmit={async (event) => {
             event.preventDefault();
             setBusy(true);
+            setStatus('');
             try {
               const response = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email }),
+                body: JSON.stringify({}),
               });
-              setStatus(
-                response.ok
-                  ? 'Check your email for your sign-in link. Keep this tab open.'
-                  : 'We could not send the link. Check your email address and try again shortly.',
-              );
+              if (!response.ok) throw new Error('UNAVAILABLE');
+              const { url } = await response.json();
+              window.location.assign(url);
             } catch {
-              setStatus('Connection unavailable. Reconnect and try again.');
+              setStatus(
+                'Google sign-in is unavailable. Please try again shortly.',
+              );
             } finally {
               setBusy(false);
             }
           }}
         >
-          <label htmlFor="email">Email address</label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            required
-            maxLength={254}
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-          />
           <button className="primary" disabled={busy}>
-            {busy ? 'Sending link…' : 'Send sign-in link'}{' '}
+            {busy ? 'Connecting…' : 'Continue with Google'}{' '}
             <span aria-hidden="true">→</span>
           </button>
           <p role="status">{status}</p>

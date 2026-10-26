@@ -7,22 +7,38 @@ export async function POST(request: Request) {
   try {
     sameOrigin(request);
     const parsed = z
-      .object({ email: z.email().max(254) })
+      .object({})
       .strict()
       .safeParse(await readJson(request));
     if (!parsed.success) throw new Error('VALIDATION_ERROR');
+    const env = serverEnv();
+    const settings = await fetch(
+      new URL('/auth/v1/settings', env.NEXT_PUBLIC_SUPABASE_URL),
+      {
+        headers: { apikey: env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (!settings.ok || (await settings.json()).external?.google !== true)
+      throw new Error('UNAVAILABLE');
     const db = await userClient();
-    const { error } = await db.auth.signInWithOtp({
-      email: parsed.data.email,
+    const { data, error } = await db.auth.signInWithOAuth({
+      provider: 'google',
       options: {
-        emailRedirectTo: new URL(
-          '/auth/callback',
-          serverEnv().APP_URL,
-        ).toString(),
+        redirectTo: new URL('/auth/callback', env.APP_URL).toString(),
+        skipBrowserRedirect: true,
       },
     });
-    if (error) throw new Error('UNAVAILABLE');
-    return json({ sent: true });
+    if (error || !data.url) throw new Error('UNAVAILABLE');
+    const target = new URL(data.url);
+    if (
+      target.origin !== new URL(env.NEXT_PUBLIC_SUPABASE_URL).origin ||
+      target.pathname !== '/auth/v1/authorize' ||
+      target.searchParams.get('provider') !== 'google'
+    )
+      throw new Error('UNAVAILABLE');
+    return json({ url: target.toString() });
   } catch (error) {
     return errorResponse(error);
   }

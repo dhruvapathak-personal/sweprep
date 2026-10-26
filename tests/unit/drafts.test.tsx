@@ -130,7 +130,7 @@ it('discards prior-account poll results after logout and after another account l
   });
   expect(readState).toHaveBeenCalledTimes(3);
   fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-  await screen.findByRole('heading', { name: 'Sign in with email' });
+  await screen.findByRole('heading', { name: 'Sign in with Google' });
   await act(async () => {
     finishAfterLogout(original);
   });
