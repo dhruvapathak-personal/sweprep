@@ -30,4 +30,6 @@ jobs:
       - run: python3 scripts/local-stack.py start
       - run: python3 scripts/local-stack.py prepare-test
       - run: npm run test:integration
+        env:
+          PGHOSTADDR: 127.0.0.2
       - run: python3 scripts/local-stack.py types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts

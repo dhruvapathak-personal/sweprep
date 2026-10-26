@@ -40,17 +40,21 @@ try {
 } catch {
   throw new Error('Fresh isolated loopback Supabase preparation is required.');
 }
+const sqlEnv = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('PG')),
+  ),
+  PGHOST: database.hostname,
+  PGHOSTADDR: database.hostname,
+  PGPORT: database.port,
+  PGDATABASE: 'postgres',
+  PGUSER: 'postgres',
+  PGPASSWORD: decodeURIComponent(database.password),
+  PGCONNECT_TIMEOUT: '5',
+};
 const sqlCheck = spawnSync('psql', ['-X', '-w', '-Atc', 'select 1'], {
   encoding: 'utf8',
-  env: {
-    ...process.env,
-    PGHOST: database.hostname,
-    PGPORT: database.port,
-    PGDATABASE: 'postgres',
-    PGUSER: 'postgres',
-    PGPASSWORD: decodeURIComponent(database.password),
-    PGCONNECT_TIMEOUT: '5',
-  },
+  env: sqlEnv,
 });
 if (sqlCheck.status !== 0 || sqlCheck.stdout.trim() !== '1')
   throw new Error(
@@ -102,18 +106,12 @@ try {
     {
       stdio: 'inherit',
       env: {
-        ...process.env,
+        ...sqlEnv,
         TEST_SUPABASE_URL: status.API_URL,
         TEST_SUPABASE_KEY: status.ANON_KEY,
         TEST_SERVICE_KEY: status.SERVICE_ROLE_KEY,
         TEST_APP_URL: baseUrl,
         TEST_RECOVERY_SECRET: recoverySecret,
-        PGHOST: database.hostname,
-        PGPORT: database.port,
-        PGDATABASE: 'postgres',
-        PGUSER: 'postgres',
-        PGPASSWORD: decodeURIComponent(database.password),
-        PGCONNECT_TIMEOUT: '5',
       },
     },
   );

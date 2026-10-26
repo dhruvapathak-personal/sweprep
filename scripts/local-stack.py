@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,9 +16,49 @@ CLI_VERSION = "2.122.0"
 
 
 def cli(*args):
-    result = subprocess.run(
-        ["supabase", *args], cwd=ROOT, capture_output=True, text=True, check=False
-    )
+    if os.environ.get("DOCKER_CONTEXT", "") not in ("", "default"):
+        raise ValueError("Select a local Unix socket with DOCKER_HOST, not DOCKER_CONTEXT.")
+    host = os.environ.get("DOCKER_HOST")
+    if not host:
+        config = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker")
+        settings = config / "config.json"
+        if settings.exists() and json.loads(settings.read_text()).get(
+            "currentContext"
+        ) not in (None, "", "default"):
+            raise ValueError("Select a local Unix socket explicitly with DOCKER_HOST.")
+        host = "unix:///var/run/docker.sock"
+    endpoint = urlsplit(host)
+    if (
+        endpoint.scheme != "unix"
+        or endpoint.netloc
+        or not Path(endpoint.path).is_absolute()
+        or endpoint.query
+        or endpoint.fragment
+        or "%" in host
+    ):
+        raise ValueError("Only a local Unix engine socket is permitted.")
+    engine_socket = Path(endpoint.path).resolve(strict=True)
+    if not engine_socket.is_socket():
+        raise ValueError("The local engine endpoint must be a Unix socket.")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("DOCKER_", "PG"))
+        and key not in ("CONTAINER_HOST", "CONTAINER_CONNECTION")
+    }
+    env["DOCKER_HOST"] = f"unix://{engine_socket}"
+    # Supabase initializes Docker before validating even non-destructive commands.
+    with TemporaryDirectory(prefix="sweprep-engine-") as isolated_config:
+        (Path(isolated_config) / "config.json").write_text('{"currentContext":"default"}')
+        env["DOCKER_CONFIG"] = isolated_config
+        result = subprocess.run(
+            ["supabase", *args],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if result.returncode:
         raise ValueError("Supabase command failed. Check the host engine and local stack.")
     return result.stdout
@@ -110,6 +151,7 @@ if __name__ == "__main__":
     except (ValueError, OSError, KeyError):
         parser.exit(
             1,
-            "Local setup failed. Check CLI 2.122.0, host engine, ports 54320–54324 "
+            "Local setup failed. Check CLI 2.122.0, local Unix DOCKER_HOST, default "
+            "DOCKER_CONTEXT, ports 54320–54324 "
             "and private files; existing .env.local is never overwritten.\n",
         )

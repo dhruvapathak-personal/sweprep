@@ -14,13 +14,16 @@ The host CLI talks to the host user's rootless Podman API. Enable it and point t
 
 ```bash
 systemctl --user enable --now podman.socket
+unset DOCKER_CONTEXT
 export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock"
 python3 scripts/local-stack.py start
 python3 scripts/local-stack.py reset
 python3 scripts/local-stack.py env
 ```
 
-The helper checks the native CLI version, suppresses credentials, and refuses non-loopback status before resets or configuration export. `reset` deletes local study data. `env` creates `.env.local` with owner-only permissions and refuses to overwrite any existing file. It enables local simulation with zero provider budgets. Never commit or share that file.
+Before every CLI invocation, the helper requires a real local Unix engine socket. It rejects TCP/SSH engine URLs and named `DOCKER_CONTEXT` selections. Without `DOCKER_HOST`, only the default Docker context/socket is accepted; if your saved Docker context is named, explicitly select the intended local socket instead. Each CLI subprocess receives a pinned `DOCKER_HOST`, an isolated default Docker config and no inherited Docker TLS/context or libpq overrides. This applies to start, stop, status, reset, configuration export and type generation, not only destructive commands.
+
+The helper also checks the native CLI version, suppresses credentials, and refuses non-loopback status before resets or configuration export. `reset` deletes local study data. `env` creates `.env.local` with owner-only permissions and refuses to overwrite any existing file. It enables local simulation with zero provider budgets. Never commit or share that file.
 
 Open this repository in the default `.devcontainer/devcontainer.json` with your Dev Containers client (set its host engine path to `podman` for rootless Podman). The client needs to control the host engine; the resulting app container does not. `postCreateCommand` runs `npm ci`. Inside the app container:
 
@@ -33,7 +36,7 @@ Node **24.22.1** and its bundled npm **11.19.1** match `.nvmrc`, CI and the lock
 
 In a second terminal, run `npm run worker`. This independent runner invokes the authenticated recovery endpoint every ten seconds. Closing the study tab does not stop it. Without the runner, submitted answers remain safely pending. `npm run worker -- --once` processes at most one due job.
 
-Host lifecycle commands stay in the host terminal: `python3 scripts/local-stack.py stop`, `reset`, `env`, `prepare-test`, and `types`. Run dependency, app, worker and test commands only inside the app container. If the host engine is Docker instead of Podman, use its normal host CLI configuration; do not export a Podman `DOCKER_HOST`.
+Host lifecycle commands stay in the host terminal: `python3 scripts/local-stack.py stop`, `reset`, `env`, `prepare-test`, and `types`. Run dependency, app, worker and test commands only inside the app container. If the host engine is Docker instead of Podman, leave the default local context selected or explicitly export `DOCKER_HOST=unix:///var/run/docker.sock` with `DOCKER_CONTEXT` unset; do not export a Podman socket for Docker.
 
 ## Google provider setup
 
@@ -87,6 +90,8 @@ npm run test:integration
 ```
 
 `prepare-test` performs a clean CLI reset and writes a private `.supabase-test.json` handoff. The runner consumes it once, rejects preparations older than 30 minutes or non-loopback endpoints, checks SQL reachability, and starts the compiled app on port 3001. Tests use `psql` over the local published database port, not `docker exec`; no engine access is needed. Missing preparation, SQL or services fails the run rather than skipping tests. Do not run a worker, app writes or parallel suites between reset and testing. Privileged Auth admin-generated verification tokens create isolated test sessions without enabling product email login; they are not Google consent evidence.
+
+SQL preflight and the test process share a sanitized libpq environment with both `PGHOST` and `PGHOSTADDR` pinned to the validated loopback destination. Inherited `PGSERVICE`, `PGHOSTADDR` and other `PG*` settings cannot override it. CI deliberately supplies conflicting `PGHOSTADDR=127.0.0.2`; the real `psql` connection report must still select `127.0.0.1`.
 
 On the host, `python3 scripts/local-stack.py types` regenerates database types using the native CLI. `python3 -m unittest discover -s tests/setup -p 'test_*.py'` checks host setup safeguards. CI runs these steps and checks for generated-type drift, in addition to real Auth, Postgres/RLS, concurrent submission, timer ownership, revision replay, request limits, budget reservations and HTTP recovery tests.
 

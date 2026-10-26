@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import socket
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +98,80 @@ class LocalStackTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 stack.run("start")
             command.assert_called_once_with("--version")
+
+    def test_unsafe_engine_selection_cannot_invoke_any_cli_command(self):
+        config = self.root / "docker-config"
+        config.mkdir()
+        (config / "config.json").write_text('{"currentContext":"remote"}')
+        for selector in [
+            {"DOCKER_HOST": "tcp://remote.example.test:2375"},
+            {"DOCKER_HOST": "ssh://remote.example.test"},
+            {"DOCKER_CONTEXT": "remote"},
+            {"DOCKER_CONFIG": str(config)},
+        ]:
+            for command in ["start", "stop", "env", "reset", "prepare-test", "types"]:
+                with self.subTest(selector=selector, command=command):
+                    with patch.dict(
+                        os.environ,
+                        {"DOCKER_HOST": "", "DOCKER_CONTEXT": "", "DOCKER_CONFIG": ""}
+                        | selector,
+                    ), patch.object(subprocess, "run") as execute:
+                        with self.assertRaises(ValueError):
+                            stack.run(command)
+                        execute.assert_not_called()
+
+    def test_local_socket_is_pinned_for_every_cli_subprocess(self):
+        runtime = self.root / "runtime" / "podman"
+        runtime.mkdir(parents=True)
+        path = runtime / "podman.sock"
+        engine = socket.socket(socket.AF_UNIX)
+        self.addCleanup(engine.close)
+        engine.bind(str(path))
+        inherited_config = self.root / "docker-config"
+        inherited_config.mkdir()
+        (inherited_config / "config.json").write_text('{"currentContext":"remote"}')
+        calls = []
+
+        def execute(args, **kwargs):
+            child_env = kwargs["env"]
+            self.assertEqual(child_env["DOCKER_HOST"], f"unix://{path}")
+            self.assertNotIn("DOCKER_CONTEXT", child_env)
+            self.assertNotIn("DOCKER_TLS_VERIFY", child_env)
+            self.assertNotIn("DOCKER_CERT_PATH", child_env)
+            self.assertNotIn("PGHOSTADDR", child_env)
+            isolated = Path(child_env["DOCKER_CONFIG"])
+            self.assertNotEqual(isolated, inherited_config)
+            self.assertEqual(
+                json.loads((isolated / "config.json").read_text()),
+                {"currentContext": "default"},
+            )
+            calls.append(args[1:])
+            return subprocess.CompletedProcess(args, 0, self.cli(*args[1:]), "")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DOCKER_HOST": f"unix://{path}",
+                    "DOCKER_CONTEXT": "",
+                    "DOCKER_CONFIG": str(inherited_config),
+                    "DOCKER_TLS_VERIFY": "1",
+                    "DOCKER_CERT_PATH": "/untrusted",
+                    "PGHOSTADDR": "127.0.0.2",
+                },
+            ),
+            patch.object(subprocess, "run", side_effect=execute),
+        ):
+            stack.run("prepare-test")
+        self.assertEqual(
+            calls,
+            [
+                ["--version"],
+                ["status", "-o", "json"],
+                ["db", "reset", "--local"],
+                ["status", "-o", "json"],
+            ],
+        )
 
 
 if __name__ == "__main__":
