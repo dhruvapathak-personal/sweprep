@@ -1,7 +1,7 @@
 {
   "name": "SWE Trainer",
   "build": { "dockerfile": "Dockerfile", "target": "app" },
-  "remoteUser": "node",
+  "remoteUser": "dhruva",
   "updateRemoteUserUID": true,
   "workspaceFolder": "/workspace/sweprep",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/sweprep,type=bind",

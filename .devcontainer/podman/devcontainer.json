@@ -1,0 +1,25 @@
+{
+  "name": "SWE Trainer · rootless Podman",
+  "build": { "dockerfile": "../Dockerfile", "target": "app" },
+  "remoteUser": "dhruva",
+  "containerUser": "dhruva",
+  "updateRemoteUserUID": false,
+  "workspaceFolder": "/workspace/sweprep",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/sweprep,type=bind",
+  "forwardPorts": [3000],
+  "postCreateCommand": "npm ci",
+  "runArgs": ["--init", "--network=host", "--userns=keep-id:uid=1000,gid=1000"],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "github.vscode-github-actions",
+        "ms-vscode-remote.remote-containers"
+      ]
+    }
+  }
+}

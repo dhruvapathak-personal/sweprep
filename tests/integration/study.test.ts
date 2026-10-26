@@ -153,8 +153,8 @@ describe('real authenticated database', { concurrent: false }, () => {
       encoding: 'utf8',
       env: { ...process.env, LC_ALL: 'C' },
     });
-    expect(connection).toContain('host "127.0.0.1"');
-    expect(connection).not.toContain('(address "127.0.0.2")');
+    expect(connection).toMatch(/host "127\.0\.0\.1"|Host\s+\|\s+127\.0\.0\.1/);
+    expect(connection).not.toContain('127.0.0.2');
   });
   it('keeps drafts private, rejects direct writes and protects rubric and grader functions', async () => {
     const item = await start();

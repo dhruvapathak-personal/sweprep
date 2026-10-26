@@ -6,7 +6,7 @@ MVP 1 is a text-answer study loop: Google-only sign-in, five candidate questions
 
 ## Local setup
 
-The supported local topology is **Linux/WSL2 with host networking**. The host runs the full Supabase stack; the app container uses its published loopback ports. The app container has no engine socket or engine client. Host Node/npm is not required. Routine tests make no paid API calls.
+The current implementation uses **Linux host networking**. The host runs the full Supabase stack; the app container uses its published loopback ports without an engine socket or engine client. Moving the project-specific Supabase CLI into a container is pending a tooling-topology decision; the host-native instructions below describe the current code, not the final agreed design. Host Node/npm is not required. Routine tests make no paid API calls. WSL2/rootless Podman setup is documented but not verified here.
 
 On host WSL Ubuntu, install rootless Podman, Python **3.10+**, and the **standalone native Supabase CLI 2.122.0**. Install the CLI release binary or Linux package from [the official release](https://github.com/supabase/cli/releases/tag/v2.122.0), verify its published checksum, and put `supabase` on the host PATH. Do not use `npx`, npm, or a containerized CLI on the host. Verify `python3 --version`, `supabase --version`, and `podman info` before proceeding.
 
@@ -25,7 +25,7 @@ Before every CLI invocation, the helper requires a real local Unix engine socket
 
 The helper also checks the native CLI version, suppresses credentials, and refuses non-loopback status before resets or configuration export. `reset` deletes local study data. `env` creates `.env.local` with owner-only permissions and refuses to overwrite any existing file. It enables local simulation with zero provider budgets. Never commit or share that file.
 
-Open this repository in the default `.devcontainer/devcontainer.json` with your Dev Containers client (set its host engine path to `podman` for rootless Podman). The client needs to control the host engine; the resulting app container does not. `postCreateCommand` runs `npm ci`. Inside the app container:
+Open this repository with your Dev Containers client using `.devcontainer/devcontainer.json` for Linux Docker or `.devcontainer/podman/devcontainer.json` for rootless Podman (set the client's host engine path to `podman`). The client needs to control the host engine; the resulting app container does not. `postCreateCommand` runs `npm ci`. Inside the app container:
 
 ```bash
 npm ci
@@ -115,17 +115,21 @@ Simulation requires an explicit flag and loopback application/database URLs. It 
 
 ## Devcontainer support
 
-The default app target has Git, CA certificates and the PostgreSQL client. It runs as generic user `node`, with Dev Containers' UID update enabled; it does not assume your host UID, username or personal paths. Linux `--network=host` deliberately keeps both app and Supabase on loopback. Do not replace loopback with `host.containers.internal`, a LAN address or a hosted URL to get tests/simulation working. The safety guard rejects those. This is not a claim of macOS/Windows Docker Desktop networking support.
+Both targets use a digest-pinned official **Ubuntu 26.04** base. The shared `base` stage installs Git, CA certificates, curl, the PostgreSQL client and official Node **24.22.1** binaries, verified against committed x64/arm64 SHA256 values from [the release checksums](https://nodejs.org/dist/v24.22.1/SHASUMS256.txt). Node includes npm **11.19.1**; the build checks both versions. Base, Node and Pixi artifacts are pinned; apt packages still receive Ubuntu repository updates, so rebuilds are not byte-for-byte reproducible. Ubuntu's existing UID/GID 1000 account is renamed to `dhruva`, with home `/home/dhruva`.
 
-For rootless Podman, use a current Dev Containers client that supports UID synchronization. If bind-mount ownership needs user-namespace mapping, configure `userns="keep-id"` in your **host** `~/.config/containers/containers.conf` (or add `--userns=keep-id` to a local-only config). Do not hardcode host UID 1000. Engine socket environment variables are host-only; never add them or socket mounts to either container config.
+The Dockerfile defines build stages, not running containers. `FROM docker.io/library/ubuntu:26.04@… AS base` refers to an external registry image and names the stage `base`. `FROM base AS app` and `FROM base AS personal-tools` create sibling targets from that shared stage. Selecting a build target produces one image; it does not start a second container. All root installation finishes before each target's final `USER dhruva`, which selects an OS account, not an image or stage. See [Docker's multi-stage build guide](https://docs.docker.com/build/building/multi-stage/).
+
+For Linux Docker, the default and `personal` configs let Dev Containers synchronize `dhruva`'s UID/GID to the host. For rootless Podman, select `.devcontainer/podman/devcontainer.json` or `.devcontainer/podman-personal/devcontainer.json`, for example `devcontainer up --workspace-folder . --config .devcontainer/podman/devcontainer.json`. Both set `--userns=keep-id:uid=1000,gid=1000` and disable editor UID rewriting. The numbers are **container** IDs; Podman maps the invoking host user's actual UID/GID to those IDs, even when they differ from 1000. Plain `keep-id` without this mapping can conflict with the image account. Docker does not accept Podman's `keep-id` mode. See [Podman's user namespace documentation](https://docs.podman.io/en/latest/markdown/podman-run.1.html#userns-mode) and [Dev Containers' UID behavior](https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user).
+
+Linux `--network=host` currently keeps app and Supabase on loopback for tests/simulation; outbound internet alone does not require it. Do not replace loopback with `host.containers.internal`, a LAN address or a hosted URL to bypass safety checks. The Supabase tooling topology remains under review. No WSL, rootless Podman/editor or macOS/Windows Docker Desktop networking validation is claimed. Engine socket environment variables stay host-only; never add them or socket mounts to an app config.
 
 ### Optional personal tools
 
-Explicitly select `.devcontainer/personal/devcontainer.json` with your Dev Containers client (for the CLI: `devcontainer up --workspace-folder . --config .devcontainer/personal/devcontainer.json`). It builds the `personal-tools` target: unprivileged Bubblewrap, socat, slirp4netns, Python/venv, SSH client and Pixi **0.55.0**, plus named editor/Copilot/Codex state volumes. Authentication for those tools is your own opt-in; no credentials are copied from the host.
+Explicitly select `.devcontainer/personal/devcontainer.json` for Docker or `.devcontainer/podman-personal/devcontainer.json` for rootless Podman. Both build `personal-tools`: unprivileged Bubblewrap, socat, slirp4netns, Python/venv, SSH client and Pixi **0.55.0**, plus named editor/Copilot/Codex state volumes. Only Pixi's binary is copied from its digest-pinned [official multiarch image](https://pixi.sh/latest/deployment/container/) into `dhruva`'s owned `~/.pixi/bin`, which is on PATH. This avoids a mutable installer script, custom Pixi architecture logic and `/root` paths. Authentication for those tools is your own opt-in; no credentials are copied from the host. Existing state volumes from a different container user may need a one-time ownership migration; they are not automatically deleted or recursively reassigned.
 
 Other personal integrations require a **local-only** config derived from this optional config:
 
-- Add `"source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly"` only when you intentionally want host SSH files available. Prefer an agent forwarded by your editor; confirm host path and permissions first.
+- Add `"source=${localEnv:HOME}/.ssh,target=/home/dhruva/.ssh,type=bind,readonly"` only when you intentionally want host SSH files available. Prefer an agent forwarded by your editor; confirm host path and permissions first.
 - Add only the personal project or Windows path mounts you actually use, sourced from your own `${localEnv:HOME}` or explicit environment variables. The baseline never requires `/mnt/c` or another user's home.
 - For NVIDIA CDI, add `"--device=nvidia.com/gpu=all"` only after configuring the host driver/CDI. For a tool that really needs TUN, add `"--device=/dev/net/tun"` only after checking its permission requirements. Neither is required or enabled for study, Supabase, Python, Pixi or agent tools. Unprivileged sandbox tools remain subject to host user-namespace/AppArmor policy; this config grants no privileged mode, extra capabilities or sudo.
 
