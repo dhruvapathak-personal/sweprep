@@ -9,10 +9,7 @@
   "forwardPorts": [3000],
   "appPort": ["127.0.0.1:3000:3000"],
   "postCreateCommand": "npm ci",
-  "runArgs": [
-    "--init",
-    "--network=bridge"
-  ],
+  "runArgs": ["--init", "--network=bridge"],
   "customizations": {
     "vscode": {
       "settings": {
