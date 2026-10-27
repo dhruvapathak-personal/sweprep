@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
-    "local_stack", Path(__file__).resolve().parents[2] / "scripts/local-stack.py"
+    "local_stack", Path(__file__).resolve().parents[2] / "scripts/ci/local-stack.py"
 )
 stack = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stack)
@@ -24,6 +24,9 @@ STATUS = {
 
 class LocalStackTests(unittest.TestCase):
     def setUp(self):
+        ci = patch.dict(os.environ, {"CI": "true"})
+        ci.start()
+        self.addCleanup(ci.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -38,23 +41,14 @@ class LocalStackTests(unittest.TestCase):
             return json.dumps(STATUS)
         return ""
 
-    def test_private_env_does_not_overwrite_or_follow_symlinks(self):
-        with patch.object(stack, "cli", side_effect=self.cli):
-            stack.run("env")
-            path = self.root / ".env.local"
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertIn("GRADING_MODE=simulated", path.read_text())
-            saved = path.read_text()
-            with self.assertRaises(FileExistsError):
-                stack.run("env")
-            self.assertEqual(path.read_text(), saved)
-            path.unlink()
-            target = self.root / "unrelated"
-            target.write_text("keep")
-            path.symlink_to(target)
-            with self.assertRaises(FileExistsError):
-                stack.run("env")
-            self.assertEqual(target.read_text(), "keep")
+    def test_requires_ci_selection_before_any_cli_process(self):
+        for command in ["start", "stop", "prepare-test", "types"]:
+            with patch.dict(os.environ, {"CI": ""}), patch.object(
+                subprocess, "run"
+            ) as execute:
+                with self.assertRaisesRegex(ValueError, "CI-only"):
+                    stack.run(command)
+                execute.assert_not_called()
 
     def test_reset_rejects_hosted_or_nonstandard_status_before_destructive_command(self):
         for replacement in [
@@ -109,7 +103,7 @@ class LocalStackTests(unittest.TestCase):
             {"DOCKER_CONTEXT": "remote"},
             {"DOCKER_CONFIG": str(config)},
         ]:
-            for command in ["start", "stop", "env", "reset", "prepare-test", "types"]:
+            for command in ["start", "stop", "prepare-test", "types"]:
                 with self.subTest(selector=selector, command=command):
                     with patch.dict(
                         os.environ,

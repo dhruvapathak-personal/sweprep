@@ -17,7 +17,7 @@
     "format:check": "prettier --check .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
-    "test:integration": "node scripts/integration.mjs",
+    "test:integration:ci": "node scripts/ci/integration.mjs",
     "worker": "node --env-file=.env.local scripts/recovery.mjs"
   },
   "dependencies": {

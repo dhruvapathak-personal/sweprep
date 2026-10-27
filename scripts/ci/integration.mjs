@@ -1,6 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { openSync, readFileSync, unlinkSync } from 'node:fs';
+if (process.env.CI !== 'true')
+  throw new Error(
+    'CI-only integration requires CI=true and isolated services.',
+  );
 
 let prepared;
 try {
@@ -8,7 +12,7 @@ try {
   unlinkSync('.supabase-test.json');
 } catch {
   throw new Error(
-    'On the host, run python3 scripts/local-stack.py prepare-test before each integration run.',
+    'In CI, run python3 scripts/ci/local-stack.py prepare-test before each integration run.',
   );
 }
 const { status, preparedAt } = prepared;
@@ -58,7 +62,7 @@ const sqlCheck = spawnSync('psql', ['-X', '-w', '-Atc', 'select 1'], {
 });
 if (sqlCheck.status !== 0 || sqlCheck.stdout.trim() !== '1')
   throw new Error(
-    'Local SQL is unreachable. Use the app container with Linux host networking and psql.',
+    'CI SQL is unreachable. Use isolated Linux loopback networking and psql.',
   );
 const recoverySecret = randomBytes(32).toString('hex');
 const baseUrl = 'http://localhost:3001';

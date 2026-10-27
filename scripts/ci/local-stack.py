@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Host-only local Supabase lifecycle; requires Python 3.10+ and the native CLI."""
+"""CI-only isolated Supabase lifecycle; requires Python 3.10+ and native CLI."""
 
 import argparse
 import json
 import os
-import secrets
 import subprocess
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 CLI_VERSION = "2.122.0"
 
 
@@ -98,42 +97,24 @@ def private_file(path, content):
 
 
 def run(command):
+    if os.environ.get("CI") != "true":
+        raise ValueError("CI-only local services require CI=true.")
     if cli("--version").strip() != CLI_VERSION:
-        raise ValueError(f"Install native Supabase CLI {CLI_VERSION} on the host.")
+        raise ValueError(f"CI requires native Supabase CLI {CLI_VERSION}.")
     receipt = ROOT / ".supabase-test.json"
     if command == "start":
         cli("start")
     elif command == "stop":
         receipt.unlink(missing_ok=True)
         cli("stop")
-    elif command == "env":
-        status = local_status()
-        values = {
-            "NEXT_PUBLIC_SUPABASE_URL": status["API_URL"],
-            "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": status["ANON_KEY"],
-            "APP_URL": "http://localhost:3000",
-            "SUPABASE_SERVICE_ROLE_KEY": status["SERVICE_ROLE_KEY"],
-            "RECOVERY_SECRET": secrets.token_hex(32),
-            "GRADING_MODE": "simulated",
-            "ALLOW_LOCAL_SIMULATION": "true",
-            "AI_DAILY_CAP_CENTS": "0",
-            "AI_MONTHLY_CAP_CENTS": "0",
-        }
-        if any("\n" in value or "\r" in value for value in values.values()):
-            raise ValueError("Invalid local configuration.")
-        private_file(
-            ROOT / ".env.local",
-            "".join(f"{key}={value}\n" for key, value in values.items()),
-        )
-    elif command in ("reset", "prepare-test"):
+    elif command == "prepare-test":
         receipt.unlink(missing_ok=True)
         local_status()
         cli("db", "reset", "--local")
-        if command == "prepare-test":
-            private_file(
-                receipt,
-                json.dumps({"status": local_status(), "preparedAt": time.time()}),
-            )
+        private_file(
+            receipt,
+            json.dumps({"status": local_status(), "preparedAt": time.time()}),
+        )
     elif command == "types":
         local_status()
         types = cli("gen", "types", "typescript", "--local")
@@ -144,14 +125,14 @@ def run(command):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=["start", "stop", "env", "reset", "prepare-test", "types"]
+        "command", choices=["start", "stop", "prepare-test", "types"]
     )
     try:
         run(parser.parse_args().command)
     except (ValueError, OSError, KeyError):
         parser.exit(
             1,
-            "Local setup failed. Check CLI 2.122.0, local Unix DOCKER_HOST, default "
+            "CI setup failed. Check CI=true, CLI 2.122.0, local Unix DOCKER_HOST, default "
             "DOCKER_CONTEXT, ports 54320–54324 "
-            "and private files; existing .env.local is never overwritten.\n",
+            "and the private reset receipt. Hosted services are not permitted.\n",
         )

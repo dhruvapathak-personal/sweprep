@@ -6,8 +6,9 @@
   "workspaceFolder": "/workspace/sweprep",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/sweprep,type=bind",
   "forwardPorts": [3000],
+  "appPort": ["127.0.0.1:3000:3000"],
   "postCreateCommand": "npm ci",
-  "runArgs": ["--init", "--network=host"],
+  "runArgs": ["--init", "--network=bridge"],
   "customizations": {
     "vscode": {
       "settings": {

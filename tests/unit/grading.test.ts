@@ -156,6 +156,23 @@ describe('grading boundaries without paid calls', () => {
     vi.stubEnv('AI_DAILY_CAP_CENTS', '101');
     expect(() => assertLiveGrading()).toThrow('SETUP_REQUIRED');
   });
+  it('supports hosted development without enabling grading or bypassing live approvals', async () => {
+    environment();
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co');
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    expect(gradingMode()).toBe('disabled');
+    await expect(requestGrade(work, false)).rejects.toThrow(
+      'LIVE_GRADING_DISABLED',
+    );
+    vi.stubEnv('GRADING_MODE', 'live');
+    vi.stubEnv('PROVIDER_DATA_POLICY_APPROVED', 'false');
+    expect(gradingMode()).toBe('live');
+    await expect(requestGrade(work, false)).rejects.toThrow(
+      'LIVE_GRADING_DISABLED',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('uses the real SDK with strict structured output, no storage/tools and one transport dispatch', async () => {
     environment(true);
     const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {

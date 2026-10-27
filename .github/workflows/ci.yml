@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 25
     env:
       NEXT_TELEMETRY_DISABLED: '1'
+      CI: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,9 +28,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: python3 scripts/local-stack.py start
-      - run: python3 scripts/local-stack.py prepare-test
-      - run: npm run test:integration
+      - name: Verify socket-free development images
+        run: |
+          docker build --target app -t sweprep-app -f .devcontainer/Dockerfile .devcontainer
+          docker build --target personal-tools -t sweprep-personal -f .devcontainer/Dockerfile .devcontainer
+          docker run --rm sweprep-app sh -c 'test "$(id -un)" = dhruva && test ! -S /var/run/docker.sock && test ! -e /dev/net/tun && test -w "$HOME" && ! command -v docker && ! command -v podman'
+          docker run --rm sweprep-personal sh -c 'pixi --version && test -w "$PIXI_HOME" && test ! -S /var/run/docker.sock'
+          docker run -d --name sweprep-bridge --network=bridge -p 127.0.0.1:3000:3000 --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace/sweprep,readonly" sweprep-app npm run start
+          curl --fail --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:3000/ --output /dev/null
+      - run: python3 scripts/ci/local-stack.py start
+      - run: python3 scripts/ci/local-stack.py prepare-test
+      - run: npm run test:integration:ci
         env:
           PGHOSTADDR: 127.0.0.2
-      - run: python3 scripts/local-stack.py types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts
+          PGSERVICE: nonexistent
+          PGSERVICEFILE: /nonexistent
+      - run: python3 scripts/ci/local-stack.py types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts
