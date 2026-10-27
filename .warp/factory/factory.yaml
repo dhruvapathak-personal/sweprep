@@ -1,0 +1,15 @@
+schemaVersion: v1alpha1
+name: sweprep
+description: Responsible for development, deployment and improvement of the sweprep project.  The intent of the project is to help me prep for big tech interviews.
+alias: sweprep
+credentialStrategy: EXECUTOR
+codeForges:
+    - GITHUB
+repositories:
+    - owner: dhruvapathak-personal
+      name: sweprep
+integrations:
+    - type: slack
+agentDefaults:
+    model: auto-genius
+    runner: default
