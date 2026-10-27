@@ -14,7 +14,7 @@
   "runArgs": [
     "--init",
     "--network=bridge",
-    "--userns=keep-id:uid=1000,gid=1000"
+    "--userns=keep-id"
   ],
   "remoteEnv": {
     "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}",
