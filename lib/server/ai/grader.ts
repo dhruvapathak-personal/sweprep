@@ -25,9 +25,10 @@ export const workSchema = z.object({
   }),
 });
 export type GradingWork = z.infer<typeof workSchema>;
+// Plain union: Zod emits discriminated unions as `oneOf`, which OpenAI strict schemas reject.
 export const providerResultSchema = z
   .object({
-    assessment: z.discriminatedUnion('outcome', [
+    assessment: z.union([
       gradeDetailsSchema.options[0],
       gradeDetailsSchema.options[1],
     ]),

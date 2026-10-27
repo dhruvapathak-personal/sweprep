@@ -181,6 +181,11 @@ describe('grading boundaries without paid calls', () => {
       expect(sent.tools).toBeUndefined();
       expect(sent.max_output_tokens).toBe(3000);
       expect(sent.text.format.strict).toBe(true);
+      const schema = JSON.stringify(sent.text.format.schema);
+      expect(schema).not.toContain('"oneOf"');
+      expect(sent.text.format.schema.properties.assessment.anyOf).toHaveLength(
+        2,
+      );
       expect(sent.model).toBe('gpt-5.4-mini-2026-03-17');
       return Response.json({
         object: 'response',

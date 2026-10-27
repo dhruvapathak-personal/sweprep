@@ -1,35 +1,37 @@
-FROM docker.io/library/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS base
+# Shared runtime dependencies
+FROM docker.io/library/ubuntu:26.04 AS base
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 postgresql-client \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 curl \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /usr/share/keyrings/nodesource.asc \
+    && echo "deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends 'nodejs=24.*' \
     && rm -rf /var/lib/apt/lists/*
-RUN case "$(dpkg --print-architecture)" in \
-    amd64) arch=x64; checksum=eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c ;; \
-    arm64) arch=arm64; checksum=33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3 ;; \
-    *) exit 1 ;; esac \
-    && curl -fsSL "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${arch}.tar.gz" -o /tmp/node.tar.gz \
-    && printf '%s  /tmp/node.tar.gz\n' "$checksum" | sha256sum -c - \
-    && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
-    && rm /tmp/node.tar.gz \
-    && test "$(node --version)" = v24.22.1 \
-    && test "$(npm --version)" = 11.19.1
 RUN groupmod --new-name dhruva ubuntu \
     && usermod --login dhruva --home /home/dhruva --move-home --groups "" ubuntu \
     && install -d -o dhruva -g dhruva /workspace/sweprep
 ENV HOME=/home/dhruva
 WORKDIR /workspace/sweprep
-CMD ["sleep", "infinity"]
-FROM base AS app
-USER dhruva
 
-FROM base AS personal-tools
+FROM base AS release
+USER dhruva
+CMD ["npm", "start"]
+
+FROM base AS dev
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    bubblewrap socat slirp4netns python3 python3-venv openssh-client \
+    curl git postgresql-client bubblewrap socat slirp4netns python3 python3-venv openssh-client sudo \
     && rm -rf /var/lib/apt/lists/* \
+    && printf 'dhruva ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/dhruva \
+    && chmod 0440 /etc/sudoers.d/dhruva \
+    && visudo -cf /etc/sudoers.d/dhruva \
     && install -d -o dhruva -g dhruva \
     /home/dhruva/.vscode-server /home/dhruva/.copilot /home/dhruva/.codex \
     /home/dhruva/.pixi /home/dhruva/.pixi/bin
-COPY --from=ghcr.io/prefix-dev/pixi:0.55.0@sha256:423daf63e4e876ab42b1be9ddee3fc867ba8b9fa511e0634de3b9df12ff1a90d --chown=dhruva:dhruva /usr/local/bin/pixi /home/dhruva/.pixi/bin/pixi
-ENV PIXI_HOME=/home/dhruva/.pixi
-ENV PATH="/home/dhruva/.pixi/bin:${PATH}"
+RUN curl -fsSL https://pixi.sh/install.sh -o /tmp/install-pixi.sh \
+    && PIXI_BIN_DIR=/usr/local/bin PIXI_NO_PATH_UPDATE=1 PIXI_NO_TELEMETRY=1 sh /tmp/install-pixi.sh \
+    && rm /tmp/install-pixi.sh
+ENV PIXI_HOME="${HOME}/.pixi"
+ENV PATH="${PIXI_HOME}/bin:${PATH}"
 USER dhruva
+CMD ["sleep", "infinity"]
