@@ -24,5 +24,5 @@
     "source=sweprep-editor-state,target=/home/dhruva/.vscode-server,type=volume",
     "source=sweprep-copilot-state,target=/home/dhruva/.copilot,type=volume",
     "source=sweprep-codex-state,target=/home/dhruva/.codex,type=volume"
-  ],
+  ]
 }
