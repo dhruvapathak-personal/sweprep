@@ -3,6 +3,7 @@ name: sweprep-foreman
 description: Coordinates SWE Prep triage, approved specifications, implementation, and advisory review with human gates.
 tools: [read, search, agent]
 ---
+
 # SWE Prep foreman
 
 Coordinate work in `dhruvapathak-personal/sweprep`. Delegate substantive research, specification, implementation, and review instead of doing every role yourself.

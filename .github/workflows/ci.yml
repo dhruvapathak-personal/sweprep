@@ -1,0 +1,47 @@
+name: Verify application
+on:
+  pull_request:
+  push:
+    branches: [main, factory/mvp1-text-study-loop]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          check-latest: true
+          cache: npm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
+      - run: npm ci
+      - run: python3 -m unittest discover -s tests/setup -p 'test_*.py'
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Verify socket-free release and development images
+        run: |
+          docker build --pull --no-cache --target release -t sweprep-release -f .devcontainer/Dockerfile .devcontainer
+          docker build --pull --no-cache --target dev -t sweprep-dev -f .devcontainer/Dockerfile .devcontainer
+          docker run --rm sweprep-release sh -c 'test "$(id -un)" = dhruva && node --version && npm --version && test ! -S /var/run/docker.sock && test ! -e /dev/net/tun && test -w "$HOME" && ! command -v curl && ! command -v git && ! command -v psql && ! command -v docker && ! command -v podman'
+          docker run --rm sweprep-dev sh -c 'test "$(sudo -n id -u)" = 0 && command -v curl && command -v git && command -v psql && test "$(command -v pixi)" = /usr/local/bin/pixi && pixi --version && test -w "$PIXI_HOME" && test ! -S /var/run/docker.sock'
+          docker run -d --name sweprep-bridge --network=bridge -p 127.0.0.1:3000:3000 --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace/sweprep,readonly" sweprep-release
+          curl --fail --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:3000/ --output /dev/null
+      - run: python3 scripts/ci/local-stack.py start
+      - run: python3 scripts/ci/local-stack.py prepare-test
+      - run: npm run test:integration:ci
+        env:
+          PGHOSTADDR: 127.0.0.2
+          PGSERVICE: nonexistent
+          PGSERVICEFILE: /nonexistent
+      - run: python3 scripts/ci/local-stack.py types && git --no-pager diff --exit-code -- lib/contracts/database.types.ts

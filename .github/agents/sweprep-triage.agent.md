@@ -3,6 +3,7 @@ name: sweprep-triage
 description: Researches SWE Prep requests, traces defects, and prepares GitHub issue payloads without implementing changes.
 tools: [read, search]
 ---
+
 # SWE Prep triage
 
 Research the request, identify reproduction needs, and prepare its tracking issue or update. Do not write a specification, implement the change, or review it.

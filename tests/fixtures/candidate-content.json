@@ -1,0 +1,292 @@
+{
+  "datasetVersion": "candidate-eval-v1",
+  "reviewStatus": "pending_human_review",
+  "reviewer": null,
+  "questions": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "questionId": "cpp-lifetime-v1",
+      "title": "A view outlives its owner",
+      "skill": "C++ · Object lifetime",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A service returns a cheap view of a generated label. Is the caller's use valid in C++20? Explain the lifetime issue and propose an ownership-safe interface."
+        },
+        {
+          "type": "code",
+          "language": "cpp",
+          "text": "std::string_view label() {\n  std::string value = \"worker-42\";\n  return value;\n}\nauto name = label();\nstd::cout << name;"
+        }
+      ],
+      "rubric": {
+        "passScore": 3,
+        "requiredClaims": [
+          "The local string is destroyed at function return.",
+          "string_view does not own or extend the string lifetime.",
+          "Reading the dangling view has undefined behavior; return an owning string."
+        ],
+        "referenceAnswer": "value dies at return. string_view stores a pointer and length without ownership, so the caller reads dangling storage and has undefined behavior. Return std::string by value; move/elision avoids needing an unsafe view. Static storage or caller-owned storage could work only with explicit lifetime guarantees."
+      },
+      "examples": [
+        {
+          "kind": "wrong",
+          "answer": "The view keeps the string alive using reference counting.",
+          "expected": "fail",
+          "range": [0, 1]
+        },
+        {
+          "kind": "partial",
+          "answer": "It could be a problem because local variables disappear, but string_view probably copies the characters.",
+          "expected": "fail",
+          "range": [1, 2]
+        },
+        {
+          "kind": "borderline",
+          "answer": "The local string is destroyed at return, leaving a dangling non-owning view. Reading it is undefined behavior. Return std::string instead.",
+          "expected": "pass",
+          "range": [3, 4]
+        },
+        {
+          "kind": "strong",
+          "answer": "string_view owns neither storage nor lifetime. value is destroyed at return, so streaming the view accesses invalid storage regardless of whether the old bytes seem unchanged. Return an owning std::string by value; elision or a move preserves efficiency. A view requires a documented longer-lived owner.",
+          "expected": "pass",
+          "range": [4, 5]
+        },
+        {
+          "kind": "ambiguous",
+          "answer": "The code may differ from what is deployed. I cannot tell which storage backs the returned object.",
+          "expected": "uncertain",
+          "range": null,
+          "reason": "The response explicitly disclaims the given premise; a human must decide whether this is evasive or genuinely unscorable."
+        }
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "questionId": "cpp-publication-v1",
+      "title": "Publishing data across threads",
+      "skill": "C++ · Memory ordering",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Assume data is initially 0 and ready is initially false. Each thread runs once. Is the assertion guaranteed? Explain the memory ordering needed for this publication pattern."
+        },
+        {
+          "type": "code",
+          "language": "cpp",
+          "text": "// Thread A\ndata = 42;\nready.store(true, std::memory_order_release);\n// Thread B\nif (ready.load(std::memory_order_relaxed)) {\n  assert(data == 42);\n}"
+        }
+      ],
+      "rubric": {
+        "passScore": 3,
+        "requiredClaims": [
+          "A relaxed load does not synchronize with the release store.",
+          "The non-atomic data accesses lack happens-before and can race.",
+          "An acquire load reading the release value publishes the prior write."
+        ],
+        "referenceAnswer": "The assertion is not guaranteed. A relaxed load does not establish synchronization, so accessing non-atomic data can race. Use an acquire load that reads the release store's value. Then the release/acquire synchronizes-with edge orders the preceding data write before the read."
+      },
+      "examples": [
+        {
+          "kind": "wrong",
+          "answer": "Release forces all other threads to see data, so relaxed is enough.",
+          "expected": "fail",
+          "range": [0, 1]
+        },
+        {
+          "kind": "partial",
+          "answer": "Relaxed might see an older value; I would add a sleep.",
+          "expected": "fail",
+          "range": [1, 2]
+        },
+        {
+          "kind": "borderline",
+          "answer": "There is no synchronization from the relaxed load, and the non-atomic data can race. Use acquire reading the release store to order data before the assertion.",
+          "expected": "pass",
+          "range": [3, 4]
+        },
+        {
+          "kind": "strong",
+          "answer": "Seeing true with relaxed is not a synchronizes-with edge. data's conflicting non-atomic operations lack happens-before, so the program can have undefined behavior. Acquire on the load, when it reads the release value, publishes data through the release/acquire edge and makes the assertion valid.",
+          "expected": "pass",
+          "range": [4, 5]
+        },
+        {
+          "kind": "ambiguous",
+          "answer": "The omitted surrounding synchronization might change my answer.",
+          "expected": "uncertain",
+          "range": null,
+          "reason": "The answer assumes missing context contrary to the prompt. Human review must set the scoring policy."
+        }
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "questionId": "python-async-v1",
+      "title": "An async endpoint blocks",
+      "skill": "Python · Async execution",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "An asyncio-based web endpoint calls time.sleep(2) inside async def. Under load, unrelated requests stall. Explain why async syntax did not prevent the stall and give two suitable remedies."
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "text": "async def handle():\n    time.sleep(2)\n    return {\"ok\": True}"
+        }
+      ],
+      "rubric": {
+        "passScore": 3,
+        "requiredClaims": [
+          "time.sleep blocks the event-loop thread.",
+          "Async tasks cooperate at await points; async def alone does not offload work.",
+          "Use asyncio.sleep for waiting or offload blocking I/O with asyncio.to_thread."
+        ],
+        "referenceAnswer": "async def does not create a thread. time.sleep blocks the event-loop thread instead of yielding. Use await asyncio.sleep for a timer, or await asyncio.to_thread for unavoidable blocking I/O. CPU-bound work may need a process or separate worker, not unlimited thread offloading."
+      },
+      "examples": [
+        {
+          "kind": "wrong",
+          "answer": "async def makes each request a new thread, so the stall is only network latency.",
+          "expected": "fail",
+          "range": [0, 1]
+        },
+        {
+          "kind": "partial",
+          "answer": "Python is slow due to the GIL. Increase the number of coroutines.",
+          "expected": "fail",
+          "range": [1, 2]
+        },
+        {
+          "kind": "borderline",
+          "answer": "time.sleep blocks the event loop. Coroutines yield with await, not merely async def. Use await asyncio.sleep, or to_thread for blocking I/O.",
+          "expected": "pass",
+          "range": [3, 4]
+        },
+        {
+          "kind": "strong",
+          "answer": "The handler runs on the event-loop thread; time.sleep never yields. async def only creates a coroutine. For a delay use await asyncio.sleep. For unavoidable blocking I/O use a bounded thread offload such as to_thread. CPU-heavy work needs an execution strategy that does not monopolize the loop or exhaust threads.",
+          "expected": "pass",
+          "range": [4, 5]
+        },
+        {
+          "kind": "ambiguous",
+          "answer": "I would need to check whether the framework executes this coroutine in another runtime.",
+          "expected": "uncertain",
+          "range": null,
+          "reason": "Runtime uncertainty must be reviewed against the explicit asyncio premise."
+        }
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "questionId": "distributed-idempotency-v1",
+      "title": "A payment response is lost",
+      "skill": "Distributed systems · Idempotency",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A payment request commits, but the client times out before receiving the response. Design retries that do not charge twice. Include concurrent retries, reusing a key with different input, and the limit of an application database transaction around an external payment API."
+        }
+      ],
+      "rubric": {
+        "passScore": 3,
+        "requiredClaims": [
+          "Persist a scoped idempotency key and canonical request fingerprint.",
+          "Use a uniqueness constraint and atomic claim/result recording for concurrent retries.",
+          "Use the provider's idempotency support or reconcile uncertain external outcomes; a local transaction cannot roll back an external charge."
+        ],
+        "referenceAnswer": "Scope the key to the user and payment operation. Persist its canonical payload fingerprint and result under a unique constraint. Return the prior result on identical retry and reject a different payload. Serialize concurrent claims. Pass a stable key to the payment provider and reconcile uncertain results. A local database transaction alone cannot undo or atomically encompass an external charge."
+      },
+      "examples": [
+        {
+          "kind": "wrong",
+          "answer": "Retry the payment with a new random key until it returns success.",
+          "expected": "fail",
+          "range": [0, 1]
+        },
+        {
+          "kind": "partial",
+          "answer": "Keep a set of request IDs in process memory to avoid retries.",
+          "expected": "fail",
+          "range": [1, 2]
+        },
+        {
+          "kind": "borderline",
+          "answer": "Store a user-scoped key and payload hash with a unique constraint and saved result. Identical retries return it, different payloads conflict. Use the provider's same idempotency key; local rollback cannot undo a charge.",
+          "expected": "pass",
+          "range": [3, 4]
+        },
+        {
+          "kind": "strong",
+          "answer": "Atomically claim a scoped stable key under a DB unique constraint, persist a canonical fingerprint, and save the result. Serialize concurrent retries, reject payload mismatch, and return existing results. Use provider idempotency and recovery/reconciliation for timeouts: local transactions cannot guarantee exactly-once external effects.",
+          "expected": "pass",
+          "range": [4, 5]
+        },
+        {
+          "kind": "ambiguous",
+          "answer": "The provider contract is unknown, so I cannot promise no duplicate charges.",
+          "expected": "uncertain",
+          "range": null,
+          "reason": "The limitation is valid but incomplete; a human must set the expected assessment."
+        }
+      ]
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "questionId": "architecture-boundaries-v1",
+      "title": "Split the service, or keep one deploy?",
+      "skill": "Architecture · Trade-offs",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A three-person team maintains one reliable deployment. A new analytics feature has different latency needs but no measured scaling problem. Compare a modular monolith with a new microservice. Give a default, measurable reasons to revisit it, and the operational costs of the split."
+        }
+      ],
+      "rubric": {
+        "passScore": 3,
+        "requiredClaims": [
+          "Default to explicit module boundaries without a speculative split.",
+          "Name independent scaling/deployment or ownership evidence that could justify a split.",
+          "Account for network failure, consistency, observability and deployment costs."
+        ],
+        "referenceAnswer": "Keep one deploy with explicit analytics boundaries until measured isolation, independent scaling or ownership needs justify extraction. Define latency/resource/error-budget signals and revisit when they show contention. A new service adds network failures, data consistency, authentication, telemetry, deployment and on-call overhead. A split can still be justified if the benefits exceed those measured costs."
+      },
+      "examples": [
+        {
+          "kind": "wrong",
+          "answer": "Microservices always scale better and eliminate operational problems.",
+          "expected": "fail",
+          "range": [0, 1]
+        },
+        {
+          "kind": "partial",
+          "answer": "Keep one app because three people is a small team. No other trade-offs matter.",
+          "expected": "fail",
+          "range": [1, 2]
+        },
+        {
+          "kind": "borderline",
+          "answer": "Keep a modular monolith until measured resource contention or independent release needs justify a split. A service adds network failures, consistency, deployment and monitoring costs.",
+          "expected": "pass",
+          "range": [3, 4]
+        },
+        {
+          "kind": "strong",
+          "answer": "Default to one deployment with a clear analytics module. Measure request tail latency, resource contention and deployment coupling against explicit objectives. Independent scaling or team ownership could justify extraction later. Price in network failure, auth, data ownership/consistency, tracing, CI and on-call costs before splitting.",
+          "expected": "pass",
+          "range": [4, 5]
+        },
+        {
+          "kind": "ambiguous",
+          "answer": "Regulatory separation might require another service, but I do not know the constraints.",
+          "expected": "uncertain",
+          "range": null,
+          "reason": "A valid missing constraint changes the default; the evaluation policy requires human judgment."
+        }
+      ]
+    }
+  ]
+}

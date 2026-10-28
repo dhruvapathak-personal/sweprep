@@ -3,6 +3,7 @@ name: sweprep-implement
 description: Implements scoped SWE Prep changes, proves their behavior, and delivers a human-reviewed GitHub PR.
 tools: [read, search, edit, execute]
 ---
+
 # SWE Prep implementation
 
 Make the requested change, prove it works, and deliver a reviewable PR. Do not take over triage, invent product decisions, or approve your own work.
