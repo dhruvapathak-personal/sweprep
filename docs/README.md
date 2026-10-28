@@ -2,6 +2,8 @@
 
 **Status: documentation-only draft for human approval. No application implementation is approved by this proposal.**
 
+**Current-state note:** this page records the original architecture proposal. MVP 1 now exists; use the [root README](../README.md) for current setup and active runtime gates. The human [approved A1–A6 in PR #2](https://github.com/dhruvapathak-personal/sweprep/pull/2#pullrequestreview-5645597629). The [automated-content and post-grade learning specification](automated-content-feedback-spec.md) proposes a focused amendment to A4, not a claim that its replacement is implemented or approved.
+
 ## Start here
 
 The [original 14-page specification](swe-trainer-implementation-specification.pdf) is a strong starting point for architecture design. It explains the learning goals, principal screens, data model, and important rules. It is not yet a complete implementation contract: some recovery behavior conflicts, and the development tools and coding standards are not selected.
@@ -40,11 +42,11 @@ Keep the technology direction already chosen on PDF pp. 2 and 7:
 
 Recommend a **modular monolith**: one deployed application with clear internal responsibilities. “Monolith” means one application, not one enormous file. “Modular” means that display code, learning rules, database access, and AI access remain separate. This avoids the deployment and networking work of multiple independent services while keeping the rules easy to test.
 
-The first future demonstration should remain the PDF p. 14 slice: sign in, load a reviewed question, type an answer, submit, grade, save, and reload the same result. It should also demonstrate honest save status and recoverable grading. Voice, charts, and full adaptive selection need not arrive first.
+The first demonstration follows the PDF p. 14 slice: sign in, load a qualified question, type an answer, submit, grade, save, and reload the same result. It also demonstrates honest save status and recoverable grading. Voice, charts, and full adaptive selection need not arrive first. The original human-reviewed qualification policy remains active in code until the proposed A4 replacement is approved and implemented.
 
 ## Approval decisions and proposed defaults
 
-These are questions for human approval, not a request to provide credentials. No new answers were obtained while preparing this draft; the defaults below are explicit assumptions.
+These were the original approval questions, not a request to provide credentials. A1–A6 were subsequently approved in PR #2. A4 below now identifies the proposed policy amendment from issue #9; unrelated decisions retain their existing approval status.
 
 ### A1. Draft and offline guarantees
 
@@ -66,9 +68,13 @@ These are questions for human approval, not a request to provide credentials. No
 
 ### A4. Content, evaluation, spending, and privacy
 
-**Proposed default:** begin with five human-reviewed questions and rubrics, and 25 reviewed example answers for testing the grader. Suggested coverage: C++ lifetime, C++ memory ordering, Python async, distributed-system idempotency, and an architecture trade-off. Show “insufficient evidence” rather than validated Senior/Principal readiness claims.
+**Proposed amendment, not yet implemented:** remove mandatory human pre-review of questions, rubrics, terms, and evaluation fixtures, including initial seeds. Use original source-backed authoring, deterministic checks where valid, a separate adversarial critic, machine-authored evaluation cases, and fail-closed quarantine/revise/discard. Model agreement does not establish truth. Existing five candidate seeds are not automatically qualified.
 
-**Approve before paid AI or learner use:** confirm those content priorities and the person who reviews them. Proposed initial spending ceilings are US$1/day and US$20/month, enforced by the application; they are budget suggestions, not usage-price estimates. Paid calls stay disabled until a positive budget and provider-data policy are approved. Answers leave the application for OpenAI; exclude personal/employer secrets from fixtures and review provider retention terms. See [gap 4](architecture-proposal.md#gap-4-trustworthy-content-and-a-small-grading-baseline).
+**Delivery targets:** first forty qualified questions and 60–80 terms across all eight PDF domains, released in batches of at most ten questions; later 120 questions and 150–200 terms. These are targets, not calibrated quantities. Content/catalog work can proceed alongside MVP 2 without waiting for full adaptive sessions. Fifteen is a session size, not the bank limit.
+
+**Post-attempt learning:** add persistent clarification about specific grading feedback and the learner's submitted reasoning. Distinguish the evaluator's generated example answer from the canonical private reference. Accept optional correction proposals through a narrow automated publisher; preserve frozen versions and past grades. No human-content review fallback or silent chat regrading is introduced.
+
+**Approve the amended design before implementation:** review [the complete contract and approval decisions](automated-content-feedback-spec.md#human-approval-requested), not answer keys. Spending ceilings remain US$1/day and US$20/month unless separately approved. Privacy/provider-data policy, release evaluation, deployment and engineering review remain independent gates. Current runtime flags stay unchanged until a tested replacement is implemented. See [gap 4](architecture-proposal.md#gap-4-trustworthy-content-and-a-small-grading-baseline).
 
 ### A5. Reproducible development and packages
 
@@ -84,13 +90,13 @@ These are questions for human approval, not a request to provide credentials. No
 
 ## Assumptions and deferred scope
 
-- A1–A6 remain proposals. No interview answer is implied by this draft.
-- There is no application or package manifest in the inspected repository. Package scripts and tests described here are future contracts, not commands available today.
+- A1–A6 were approved in PR #2; the issue #9 amendment to A4 awaits separate approval. Do not infer approval of new content automation or clarification features from the earlier review.
+- The original no-application baseline is historical. Current code and the root README supersede its setup/tooling observations.
 - Preserve the current PDF and container during this review. Container portability findings are static observations, not results of a build.
-- Retain all PDF curriculum domains over time. The five-question seed is a small test surface, not a replacement curriculum.
+- Retain all PDF curriculum domains. The five-question seed is a small historical test surface, not a replacement curriculum or an automatically qualified bank.
 - Defer voice/edit, rich diagrams, competency charts, and PWA installability to their PDF p. 12 phases.
 - Defer full offline sessions, offline submission queues, and full offline voice transcription.
-- Defer large model-comparison studies and Principal-depth assessments. A tiny grading safety baseline must precede learner-facing scores.
+- Defer large model-comparison studies and Principal-depth assessments. The proposed automated qualification/evaluation baseline must precede newly qualified learner-facing scores; it is not human gold or readiness calibration.
 - Do not add microservices, Kubernetes, custom queue infrastructure, native mobile builds, or a new package manager.
 
 ## Compact glossary
@@ -110,7 +116,7 @@ These are questions for human approval, not a request to provide credentials. No
 - **Migration:** a versioned database change, stored in the repository and applied in order.
 - **PWA — Progressive Web App:** a website that can offer installation and selected offline behavior where the browser supports it.
 - **RLS — row-level security:** database rules that limit access to individual rows.
-- **Rubric / golden evaluation:** scoring rules / reviewed example answers used to check the grader.
+- **Rubric / evaluation fixture:** scoring rules / an example assessment used to check the grader. Machine-authored fixtures are not independent human-gold labels.
 - **Runtime validation:** checking actual data while the program runs, not only checking source-code types.
 - **SDK / SSR:** software development kit / server-side rendering, where the server prepares a page.
 - **SQL — Structured Query Language:** the language used to define and query relational data.
@@ -121,4 +127,4 @@ These are questions for human approval, not a request to provide credentials. No
 
 ## What approval means
 
-Please approve or amend A1–A6 and the proposed standards as a design direction. Record any accepted PDF changes explicitly. A later, separate request must authorize application work. This draft PR should remain a documentation review, not be treated as evidence that the application runs.
+A1–A6's original approval is recorded above. Please approve or amend the focused [issue #9 contract](automated-content-feedback-spec.md#human-approval-requested) before affected implementation. Record the replacement of the PDF's mandatory human-gold policy explicitly. Reviewing this proposal does not authorize paid calls, content publication, hosted changes, deployment, or implementation.

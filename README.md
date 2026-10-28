@@ -4,6 +4,8 @@ MVP 1 is a text-answer study loop: Google-only sign-in, five candidate questions
 
 **This is a development build, not a validated interview assessment.** All five questions and 25 example assessments await human review. No live model evaluation or paid provider call has been performed. Voice, vocabulary practice, adaptive sessions, charts, offline question loading and PWA installation are not implemented.
 
+**Proposed next step, documentation only:** [Automated content and post-grade learning](docs/automated-content-feedback-spec.md) specifies source-backed automatic qualification without mandatory human content pre-review, a larger paged question/term bank, conversation about specific grading feedback, and optional correction proposals. It awaits explicit specification approval. It does not qualify existing seeds, publish content, change the runtime gates below, or authorize implementation or paid calls.
+
 ## Local setup
 
 Normal development connects the app container to a **requester-owned, isolated hosted DEV Supabase project**. All project dependencies, app commands and optional personal tools run in containers. The WSL/Linux host needs only core services such as Podman, Git, SSH and the editor/Dev Containers client: no host Node, npm, Python or Supabase CLI installation. Neither developer target has an engine socket or lifecycle client.
@@ -102,6 +104,8 @@ The OAuth smoke test does not complete Google consent, exchange a real callback 
 ## Deployment and live-grading gates
 
 Ordinary API requests use a verified Supabase user and RLS, never the service-role key. Rubrics stay in a private schema. Only authenticated worker functions can reserve provider cost and append grades. Treat the service-role and recovery credentials as secrets.
+
+**Current operating contract:** the gates below describe the implemented release. [Issue #9's proposed policy transition](docs/automated-content-feedback-spec.md#t6-runtime-gate-transition-only-after-approval-and-implementation) would replace mandatory human-content review with recorded automated qualification after separate approval and implementation. Do not set the current content-review flag merely because that proposal exists. Privacy, spending, deployment, and engineering review remain independent.
 
 Live grading stays disabled until a human completes all of these gates:
 
