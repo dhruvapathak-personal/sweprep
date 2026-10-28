@@ -2,6 +2,8 @@
 
 **Draft recommendation, not implementation approval.** [Start here](README.md) for the reading guide and approval decisions. All “PDF” citations refer to the [unchanged specification](swe-trainer-implementation-specification.pdf).
 
+**Historical baseline:** MVP 1 code and the [root README](../README.md) supersede this document's original “future paths” and setup observations. [Issue #9's specification](automated-content-feedback-spec.md) proposes an amendment to gap 4 only; the active human-content runtime gate is not changed by these documents.
+
 ## 1. Keep one application with clear responsibilities
 
 PDF p. 7 already chooses Next.js App Router, server-only route handlers/services, Supabase, and server-side OpenAI. The proposal makes those boundaries explicit rather than replacing the stack.
@@ -31,7 +33,7 @@ These are future paths, not existing code or instructions to create them in this
 - `lib/server/ai/` owns OpenAI calls and versioned prompts.
 - `lib/contracts/` owns safe shared request/response schemas. It must not export secret rubrics.
 - `supabase/migrations/` owns versioned SQL schema, privileges, policies, and transactional functions.
-- `tests/` owns unit, real-database integration, browser-workflow, and reviewed-fixture tests.
+- `tests/` owns unit, real-database integration, browser-workflow, and versioned evaluation-fixture tests. Machine-authored cases must not be called independent human gold.
 
 Dependency direction: pages/routes call services; services call domain functions and adapters; domain functions import neither Next.js nor either provider SDK. Browser code may import safe shared contracts, never `lib/server/`. SQL constraints remain the last defense against invalid concurrent writes.
 
@@ -222,47 +224,45 @@ The same answer history can produce different dashboards depending on which retr
 
 **Current evidence**
 
-- PDF p. 10 requires human-reviewed “golden” attempts to detect drift.
-- PDF p. 12 places a fuller golden evaluation set/model comparison in V2.
-- PDF pp. 6 and 14 require honest readiness evidence, acknowledge flawed generated content, and say API use is separately billed.
+- PDF p. 10 originally requires human-reviewed “golden” attempts. The requester now rejects mandatory human content pre-review to avoid seeing answers before attempting questions.
+- A1–A6 were approved in PR #2. Issue #9 proposes a focused amendment to A4.
+- Current MVP 1 still has five candidate questions, private rubrics, and 25 unreviewed example assessments. Its runtime enforces the original content/evaluation gates.
+- `components/grade.tsx` displays generated `grade.details.idealAnswer` as “Reference reasoning,” not necessarily the canonical reference in `private.rubrics`.
 
 **Missing or conflicting behavior**
 
-It is unclear which reviewed content and grading examples exist before the first learner receives a score. Model choice, acceptable error, request cost, and privacy controls are not pinned.
+The human-review prerequisite conflicts with the requester's learning workflow. The code has no source-backed qualification/import pipeline, current-only paged catalog, vocabulary persistence, instructional dialogue, or correction proposal/publisher boundary.
 
 **Practical consequence**
 
-A structurally valid AI response can still be factually wrong. Without reviewed examples, a prompt change can quietly mark correct reasoning wrong. Early numerical scores can look like validated hiring-readiness measures.
+Simply removing an approval flag would expose unqualified content without fixing correctness, provenance, version safety, or learner feedback. Valid output and model agreement do not establish truth.
 
-**Proposed fix — default A4**
+**Proposed amendment — A4, pending human specification approval**
 
-- Seed five human-reviewed question versions, each with rubric, reference answer, prerequisites, and spoiler-safe vocabulary.
-- Use the five candidate topics in A4 unless the human changes the priorities. These seed records do not claim comprehensive coverage.
-- For each seed question, review five example answers: clearly wrong, partial/below pass, borderline pass, strong, and ambiguous/unscorable. Total: 25 golden examples. Golden means a human has supplied the expected assessment.
-- Record expected pass/fail or unscored outcome, acceptable score/range, required reasoning, and the reason an example is ambiguous.
-- First test the deterministic schema/rubric adapter using stored provider responses, without paid network calls.
-- Before learner use or a model/prompt/rubric release, run a budgeted live evaluation. Require no pass/fail reversals on these fixtures, all ambiguous fixtures flagged unscored, and every scored answer within its human-approved range. Investigate a mismatch or change the reviewed fixture explicitly; do not silently weaken the gate.
-- Store exact model identifier, prompt, rubric, validator, evaluation dataset, and grader versions with results. Record duration and usage/cost metadata, not private answer text in operational logs.
-- Configure an allowed model per task after evaluation, not “latest” at request time. Start with grading only; select cheaper terminology/transcription models when those tasks are introduced and evaluated.
-- Propose a 30-second per-call deadline and capped input/output sizes before selecting the first model. Measure real latency and revise the deadline/host choice if it fails evaluation; do not advertise a guaranteed fast grade without measurement.
-- Enforce per-user request limits and the approved application spending ceilings before dispatch. Reserve estimated maximum request cost atomically, settle from usage when known, and treat ambiguous provider outcomes conservatively. Provider dashboard alerts supplement, not replace, the application cap.
-- Do not send secrets or employer-confidential examples. Limit provider payloads to the answer and required question/rubric context. Review provider retention settings before paid trials. Audio deletion remains the PDF default when voice is added.
-- Label early readiness as insufficient/provisional evidence with assessed domains and sample counts. Do not claim externally validated Senior/Principal performance or candidate percentiles. Broader calibration and leadership/system-design validation remain V2.
+- Use the [automated-content and post-grade learning contract](automated-content-feedback-spec.md) for all new content and requalification of seeds. It specifies schema/API boundaries, lifecycle, budgets, and acceptance cases.
+- Author original rights-cleared content. Check claim evidence, execute bounded tests where valid, and use a separate adversarial critic and machine-authored fixtures.
+- Permit public interview banks such as LeetCode as discovery/context references for coverage, patterns, and skills, with recorded source URL/provenance. Keep authoritative correctness evidence separate. Reference-domain approval does not authorize fetching, copying, close paraphrase, or importing third-party material; any reuse must meet its terms/license or obtained permission and attribution requirements. This documentation performs no ingestion.
+- Quarantine unsupported, disputed, invalid, or over-budget items. Permit bounded revision, then discard. Do not require human answer-key review as fallback.
+- Target forty questions/60–80 terms, in batches of at most ten questions, across eight PDF domains. Later target 120 questions/150–200 terms. These are coverage targets, not calibration.
+- Publish new immutable versions through a narrow automated publisher. Keep only current qualified content selectable, with replay-safe imports and paging beyond 100. Preserve exact historical versions.
+- Add conversation about specific feedback and the submitted reasoning. Pin the effective grade and distinguish generated example answers from canonical references.
+- Accept optional owner-scoped correction proposals. Validate the full bundle before global publication; preserve past grades. Do not silently regrade or pretend original-rubric retry applies a corrected version.
+- Keep readiness provisional and preserve independent privacy, spending, release evaluation, deployment, and engineering approvals. This documentation does not change any runtime flag.
 
 **Alternatives and trade-offs**
 
-- Fully generated live questions offer breadth quickly, but make both the question and grader moving targets.
-- Reviewed seeds and a tiny baseline slow initial content preparation, but isolate correctness before breadth.
-- Twenty-five examples detect obvious regressions; they do not validate the complete curriculum or establish Principal readiness. The broader evaluation effort is still needed later.
+- Human-reviewed seeds provide an independent check but spoil the requester's learning and restore the rejected bottleneck.
+- Unchecked generation provides breadth but lacks evidence and correction controls.
+- Automated qualification supports learning without mandatory pre-review but retains correlated-model risk. Neither fixtures nor critic agreement prove factual truth.
+- Prospective corrections preserve reproducibility. Cross-version regrading needs its own compatibility/audit contract and is deferred.
 
 **Acceptance evidence**
 
-- Proposed fixture tests: `grader.rejects-invalid-score`, `grader.enforces-critical-pass-rule`, `grader.ambiguous-unscored`, and `content.no-primer-spoilers`.
-- Proposed `npm run eval:grading` must produce per-fixture results, versions, cost, and latency against the approved baseline. This paid command is future-only and excluded from routine offline CI.
-- Proposed budget tests: `ai.budget-concurrent-reservations`, `ai.retry-budget-exhausted`, and `ai.no-call-without-approval`.
-- Human approval must identify the seed reviewer, topic priorities, spending caps, and provider-data policy before learner use. No API credential belongs in the documents.
+- Use the [new validation criteria](automated-content-feedback-spec.md#validation-criteria): evidence/rights and critic failures block publication; replay-safe imports and concurrent corrections preserve versions; paged catalogs and owned history stay accessible.
+- Test premature/cross-user disclosure denial, specific-feedback context pinning, persisted follow-ups, proposal authority, revocation, shared budgets, and unchanged grades.
+- Require computer-use video of the future learning/correction flows after a successful build. No feature, paid evaluation, or UI verification is claimed by this documentation.
 
-**Approval question:** approve A4's content priorities, baseline size, provisional claims, and spending/privacy defaults.
+**Approval question:** approve the [focused decisions](automated-content-feedback-spec.md#human-approval-requested), including automated publisher authority and prospective-only corrections. Review the pipeline, not answer keys. Implementation and live use need separate authorization.
 
 ### Gap 5: The container is not yet an app-development contract
 
