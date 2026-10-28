@@ -11,11 +11,7 @@
   "forwardPorts": [3000],
   "appPort": ["127.0.0.1:3000:3000"],
   "postCreateCommand": "npm ci",
-  "runArgs": [
-    "--init",
-    "--network=bridge",
-    "--userns=keep-id"
-  ],
+  "runArgs": ["--init", "--network=bridge", "--userns=keep-id"],
   "remoteEnv": {
     "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}",
     "HOST_SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
