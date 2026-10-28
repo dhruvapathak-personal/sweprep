@@ -6,6 +6,7 @@ RUN apt-get update \
     && echo "deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends 'nodejs=24.*' \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 RUN groupmod --new-name dhruva ubuntu \
     && usermod --login dhruva --home /home/dhruva --move-home --groups "" ubuntu \
