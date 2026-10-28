@@ -20,7 +20,7 @@ In [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customiz
 
 Give the selected role the exact request, issue text or link, branch/PR context, evidence, acceptance criteria, and unresolved choices. The foreman can invoke other named roles only if the host provides that capability. Otherwise it returns a complete manual brief for the user to pass to the next selected role. There is no durable autonomous workflow or cross-session messaging guarantee.
 
-VS Code supports client-specific `handoffs` buttons, but GitHub cloud ignores that property. These portable profiles omit it and use named-role selection or supported delegation instead. No optional MCP or browser integration is configured here; adding one needs a separate authorized setup task.
+VS Code supports client-specific `handoffs` buttons, but GitHub cloud ignores that property. These portable profiles omit it and use named-role selection or supported delegation instead. MCP integrations are configured separately in the workspace-root [`.mcp.json`](../.mcp.json), using the portable Copilot `mcpServers` format. This includes the read-only Supabase HTTP server. In VS Code, the workspace-root configuration destination is experimental and controlled by `chat.mcp.workspaceRootConfig.enabled`; the older `.vscode/mcp.json` format uses `servers` instead. See the [VS Code configuration guidance](https://code.visualstudio.com/docs/agent-customization/mcp-servers#_choose-a-configuration-destination). These integrations do not grant the profiles additional tool permissions or activate archived Factory integrations.
 
 ### Tools and permissions
 
