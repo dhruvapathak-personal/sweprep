@@ -10,6 +10,11 @@
       "command": "/opt/devcontainer-mcp/git-venv/bin/python",
       "args": ["-m", "mcp_server_git", "--repository", "/workspace/sweprep"]
     },
+    "graphify": {
+      "type": "stdio",
+      "command": "/opt/devcontainer-mcp/graphify-venv/bin/graphify-mcp",
+      "args": ["/workspace/sweprep/graphify-out/graph.json"]
+    },
     "github": {
       "type": "http",
       "url": "https://api.githubcopilot.com/mcp/"

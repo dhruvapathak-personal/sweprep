@@ -31,7 +31,8 @@ RUN apt-get update \
     /home/dhruva/.pixi /home/dhruva/.pixi/bin \
     /opt/devcontainer-mcp/npm /opt/devcontainer-mcp/playwright-browsers
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/devcontainer-mcp/playwright-browsers
-RUN npm install --global --prefix /opt/devcontainer-mcp/npm --no-audit --no-fund \
+RUN npm install --global --prefix /opt/devcontainer-mcp/npm \
+    --cache /tmp/devcontainer-mcp-npm-cache --no-audit --no-fund \
     @modelcontextprotocol/server-filesystem@2.0.1 \
     @playwright/mcp@0.0.83 \
     playwright@1.64.0-alpha-1790635538000 \
@@ -39,12 +40,16 @@ RUN npm install --global --prefix /opt/devcontainer-mcp/npm --no-audit --no-fund
     && python3 -m venv /opt/devcontainer-mcp/git-venv \
     && /opt/devcontainer-mcp/git-venv/bin/pip install --no-cache-dir \
     "git+https://github.com/modelcontextprotocol/servers.git@ef9808f71090d0db3eda99e2af2ba78f1086f4fb#subdirectory=src/git" \
+    && python3 -m venv /opt/devcontainer-mcp/graphify-venv \
+    && /opt/devcontainer-mcp/graphify-venv/bin/pip install --no-cache-dir \
+    "graphifyy[mcp,sql]==0.9.97" \
     && /opt/devcontainer-mcp/npm/bin/playwright install-deps chromium \
-    && /opt/devcontainer-mcp/npm/bin/playwright install chromium
+    && /opt/devcontainer-mcp/npm/bin/playwright install chromium \
+    && rm -rf /tmp/devcontainer-mcp-npm-cache
 RUN curl -fsSL https://pixi.sh/install.sh -o /tmp/install-pixi.sh \
     && PIXI_BIN_DIR=/usr/local/bin PIXI_NO_PATH_UPDATE=1 PIXI_NO_TELEMETRY=1 sh /tmp/install-pixi.sh \
     && rm /tmp/install-pixi.sh
 ENV PIXI_HOME="${HOME}/.pixi"
-ENV PATH="${PIXI_HOME}/bin:${PATH}"
+ENV PATH="${PIXI_HOME}/bin:/opt/devcontainer-mcp/graphify-venv/bin:${PATH}"
 USER dhruva
 CMD ["sleep", "infinity"]

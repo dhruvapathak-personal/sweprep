@@ -15,7 +15,37 @@ npm ci
 npm run dev
 ```
 
-The personal profile also loads [the workspace MCP configuration](.vscode/mcp.json). Its Filesystem and Git servers are limited to this repository; Playwright runs Chromium; Container MCP uses the host Podman socket. GitHub and Supabase connect to their hosted MCP servers using VS Code OAuth; Supabase is configured read-only. Complete authentication in VS Code and select only the intended DEV Supabase project. The local servers and Playwright's Chromium runtime are installed into the `dev` image during its build. Use this MCP configuration with the personal profile; the release image does not include the local packages or mount the Podman socket.
+The personal profile also loads [the workspace MCP configuration](.vscode/mcp.json). Its Filesystem and Git servers are limited to this repository; Graphify reads the local `graphify-out/graph.json`; Playwright runs Chromium; Container MCP uses the host Podman socket. GitHub and Supabase connect to their hosted MCP servers using VS Code OAuth; Supabase is configured read-only. Complete authentication in VS Code and select only the intended DEV Supabase project. The local servers and Playwright's Chromium runtime are installed into the `dev` image during its build. Use this MCP configuration with the personal profile; the release image does not include the local packages or mount the Podman socket.
+
+### Create and view a local Graphify graph
+
+The personal dev image includes Graphify's CLI, SQL parser and local MCP server. From the repository root in the container, build the code graph and its interactive HTML visualization:
+
+```bash
+graphify extract . --code-only
+graphify cluster-only .
+graphify export html
+```
+
+`extract --code-only` parses source code locally and records code entities and their relationships without semantically processing documents or media. `cluster-only` groups related graph nodes. It also tries to label the groups; if no supported model backend is configured, it leaves generic names such as `Community 1`. To skip label generation explicitly, use `graphify cluster-only . --no-label`. GitHub Copilot's chat subscription is not a Graphify labeling backend; see [Graphify backend configuration](https://docs.graphify.com/reference/configuration.md) for supported providers.
+
+The generated graph data, report and visualization are written under `graphify-out/`; that output is git-ignored because it is derived from repository contents and may include source text and paths. Graphify MCP reads `graphify-out/graph.json`, so generate the graph before asking the MCP server graph questions.
+
+To view the interactive graph in VS Code, serve the generated HTML from a terminal in the container:
+
+```bash
+python3 -m http.server 8000 --directory graphify-out
+```
+
+Open the **Ports** view, forward port `8000` if VS Code has not forwarded it already, then open `http://localhost:8000/graph.html` in a browser. Keep the server process running while viewing the graph; press `Ctrl+C` in that terminal when finished.
+
+After changing repository code, refresh the graph and export the visualization again:
+
+```bash
+graphify update .
+graphify cluster-only .
+graphify export html
+```
 
 Node **24.x** is selected by `.nvmrc`, CI and the package engine requirement. Use the npm bundled with Node; npm is not versioned or upgraded separately. CI selects the latest Node 24 release, and `npm ci` installs the locked project dependencies. Each profile uses bridge networking and publishes container port 3000 only at host `127.0.0.1:3000`; the app listens on `0.0.0.0` inside the container. Open http://localhost:3000. Ordinary outbound HTTPS/DNS reaches hosted Supabase and Google without host networking. Do not open two profiles on the same port.
 
@@ -119,7 +149,7 @@ Simulation requires an explicit flag and loopback application/database URLs. It 
 
 ## Devcontainer support
 
-Both targets use the official **Ubuntu 26.04** base tag without a digest pin. The shared `base` stage contains runtime dependencies: CA certificates, libstdc++ and Node installed system-wide through NodeSource's signed **24.x** apt repository. Curl is installed only temporarily to configure Node, then purged in the same layer. The `nodejs` package includes compatible npm; there is no separate npm installation or version pin, Node image copy, or per-user version manager. Git, curl and the PostgreSQL client are installed only in `dev`. The `dev` target also installs pinned versions of the Filesystem, Playwright and Podman MCP packages, the Git MCP from a pinned source revision, and Chromium plus its OS dependencies. Use `podman build --no-cache --pull=always` when rebuilding to refresh Ubuntu and rerun installation for the latest Node 24 package, MCP dependencies and Pixi. Pulling the base image alone does not invalidate cached installation layers. Ubuntu, Node, Pixi and apt packages can receive updates, so rebuilds are not byte-for-byte reproducible. Ubuntu's existing UID/GID 1000 account is renamed to `dhruva`, with home `/home/dhruva`.
+Both targets use the official **Ubuntu 26.04** base tag without a digest pin. The shared `base` stage contains runtime dependencies: CA certificates, libstdc++ and Node installed system-wide through NodeSource's signed **24.x** apt repository. Curl is installed only temporarily to configure Node, then purged in the same layer. The `nodejs` package includes compatible npm; there is no separate npm installation or version pin, Node image copy, or per-user version manager. Git, curl and the PostgreSQL client are installed only in `dev`. The `dev` target also installs pinned versions of the Filesystem, Playwright, Podman and Graphify MCP packages, the Git MCP from a pinned source revision, and Chromium plus its OS dependencies. Use `podman build --no-cache --pull=always` when rebuilding to refresh Ubuntu and rerun installation for the latest Node 24 package, MCP dependencies and Pixi. Pulling the base image alone does not invalidate cached installation layers. Ubuntu, Node, Pixi and apt packages can receive updates, so rebuilds are not byte-for-byte reproducible. Ubuntu's existing UID/GID 1000 account is renamed to `dhruva`, with home `/home/dhruva`.
 
 The Dockerfile defines build stages, not running containers. `FROM docker.io/library/ubuntu:26.04 AS base` refers to an external registry image and names the stage `base`. `FROM base AS release` and `FROM base AS dev` create sibling targets from that shared stage. Selecting a build target produces one image; it does not start a second container. The final targets define their own commands: `release` runs `npm start`, while `dev` runs `sleep infinity` for interactive sessions. `release` is currently a runtime image, not a self-contained application artifact: it requires the application, installed dependencies and `npm run build` output mounted at `/workspace/sweprep`, as CI does. The default Dev Container profile selects `release`, keeps the image account's IDs and runs `npm ci` after creation; its workspace permissions must be prepared for that account separately. Only `.devcontainer/personal/devcontainer.json` selects `dev` and mounts persistent editor/agent state. All root installation finishes before each target's final `USER dhruva`, which selects an OS account, not an image or stage. See [Podman's build target option](https://docs.podman.io/en/latest/markdown/podman-build.1.html#target-stage).
 
@@ -131,7 +161,7 @@ Every developer profile uses bridge networking with outbound internet and localh
 
 The `dev` target grants `dhruva` passwordless sudo inside the container; `release` does not install or grant sudo. This does not grant additional container capabilities or host root access. Iptables is not installed.
 
-The personal profile builds `dev`, which adds Git, curl, the PostgreSQL client, unprivileged Bubblewrap, socat, slirp4netns, Python/venv, SSH client, the local MCP servers and Playwright Chromium, and the latest Pixi. It mounts named editor/Copilot/Codex state volumes, the host SSH agent socket at `SSH_AUTH_SOCK`, and the host's `~/.ssh/known_hosts` and `~/.ssh/id_ed25519.pub` read-only. Before opening it, start your host SSH agent, export `SSH_AUTH_SOCK` and confirm those two files exist. The forwarded agent permits use of the host's loaded SSH identities; no private-key file is mounted. If you do not want these integrations, use a local-only copy of the personal config without its SSH mounts and related `remoteEnv` entries. Pixi's [official installer](https://pixi.sh/install.sh) installs the executable system-wide in `/usr/local/bin`, without copying from another image or modifying shell startup files. Installer telemetry is disabled. `PIXI_HOME` remains `dhruva`'s writable `~/.pixi`, and `~/.pixi/bin` stays on PATH for tools installed with `pixi global install`. Authentication for editor/agent tools is your own opt-in. Existing state volumes from a different numeric UID/GID may need a one-time ownership migration; they are not automatically deleted or recursively reassigned.
+The personal profile builds `dev`, which adds Git, curl, the PostgreSQL client, unprivileged Bubblewrap, socat, slirp4netns, Python/venv, SSH client, the local MCP servers and Playwright Chromium, and the latest Pixi. Graphify's CLI is also installed in its isolated Python environment and added to `PATH`, so it can generate the local graph used by Graphify MCP. It mounts named editor/Copilot/Codex state volumes, the host SSH agent socket at `SSH_AUTH_SOCK`, and the host's `~/.ssh/known_hosts` and `~/.ssh/id_ed25519.pub` read-only. Before opening it, start your host SSH agent, export `SSH_AUTH_SOCK` and confirm those two files exist. The forwarded agent permits use of the host's loaded SSH identities; no private-key file is mounted. If you do not want these integrations, use a local-only copy of the personal config without its SSH mounts and related `remoteEnv` entries. Pixi's [official installer](https://pixi.sh/install.sh) installs the executable system-wide in `/usr/local/bin`, without copying from another image or modifying shell startup files. Installer telemetry is disabled. `PIXI_HOME` remains `dhruva`'s writable `~/.pixi`, and `~/.pixi/bin` stays on PATH for tools installed with `pixi global install`. Authentication for editor/agent tools is your own opt-in. Existing state volumes from a different numeric UID/GID may need a one-time ownership migration; they are not automatically deleted or recursively reassigned.
 
 Other personal integrations require a **local-only** config derived from this optional config:
 
