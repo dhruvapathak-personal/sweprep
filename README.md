@@ -142,3 +142,5 @@ No optional configuration needs or authorizes an engine socket.
 ## Design sources
 
 The original [implementation specification](docs/swe-trainer-implementation-specification.pdf) and the approved [architecture amendments](docs/architecture-proposal.md) define the product direction. The documents in `docs/` preserve their original documentation-stage wording. This README describes what this implementation actually runs.
+
+The [Factory and Copilot agent guide](docs/factory-definition.md) explains the five translated Copilot agents and the preserved Factory source baseline. It does not deploy a live Factory.

@@ -4,6 +4,8 @@ node_modules/
 .playwright-cli/
 lib/contracts/database.types.ts
 next-env.d.ts
+# Preserve the imported Factory source archive byte-for-byte.
+.warp/factory/
 supabase/.temp/
 supabase/.branches/
 docs/README.md
