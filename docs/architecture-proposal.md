@@ -241,6 +241,7 @@ Simply removing an approval flag would expose unqualified content without fixing
 
 - Use the [automated-content and post-grade learning contract](automated-content-feedback-spec.md) for all new content and requalification of seeds. It specifies schema/API boundaries, lifecycle, budgets, and acceptance cases.
 - Author original rights-cleared content. Check claim evidence, execute bounded tests where valid, and use a separate adversarial critic and machine-authored fixtures.
+- Permit public interview banks such as LeetCode as discovery/context references for coverage, patterns, and skills, with recorded source URL/provenance. Keep authoritative correctness evidence separate. Reference-domain approval does not authorize fetching, copying, close paraphrase, or importing third-party material; any reuse must meet its terms/license or obtained permission and attribution requirements. This documentation performs no ingestion.
 - Quarantine unsupported, disputed, invalid, or over-budget items. Permit bounded revision, then discard. Do not require human answer-key review as fallback.
 - Target forty questions/60–80 terms, in batches of at most ten questions, across eight PDF domains. Later target 120 questions/150–200 terms. These are coverage targets, not calibration.
 - Publish new immutable versions through a narrow automated publisher. Keep only current qualified content selectable, with replay-safe imports and paging beyond 100. Preserve exact historical versions.
