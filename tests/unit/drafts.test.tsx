@@ -12,7 +12,7 @@ import {
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AnswerEditor } from '@/components/answer-editor';
 import { Trainer } from '@/components/trainer';
-import { readState } from '@/lib/client/api';
+import { changeState, readState } from '@/lib/client/api';
 import {
   clearDrafts,
   readDraft,
@@ -30,7 +30,10 @@ const itemId = '30000000-0000-4000-8000-000000000002';
 const questionId = '10000000-0000-4000-8000-000000000001';
 const writerId = '30000000-0000-4000-8000-000000000003';
 const otherWriter = '30000000-0000-4000-8000-000000000004';
-vi.mock('@/lib/client/api', () => ({ readState: vi.fn() }));
+vi.mock('@/lib/client/api', () => ({
+  readState: vi.fn(),
+  changeState: vi.fn(),
+}));
 const state = () =>
   stateSchema.parse({
     userId,
@@ -39,7 +42,7 @@ const state = () =>
     gradingMode: 'simulated',
     serverNow: '2026-10-25T00:00:00Z',
     todayMs: 0,
-    questions: [],
+    pinnedQuestions: [],
     attempts: [],
     jobs: [],
     grades: [],
@@ -76,6 +79,74 @@ const snapshot = (answer: string, writer = writerId): DraftSnapshot => ({
   updatedAt: new Date().toISOString(),
   submission: null,
   timingDisconnected: false,
+});
+
+it('saves local reasoning before lookup and reveals a definition only after irreversible cloud assistance', async () => {
+  const initial = state();
+  initial.items[0] = {
+    ...initial.items[0],
+    lease_device: null,
+    lease_until: null,
+    paused: true,
+  };
+  const assisted = structuredClone(initial);
+  assisted.items[0] = { ...assisted.items[0], assisted: true, version: 3 };
+  vi.mocked(readState).mockResolvedValue(assisted);
+  let disclose: (value: Response) => void = () => {};
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    if (init?.method === 'POST')
+      return new Promise((resolve) => {
+        disclose = resolve;
+      });
+    return Response.json([{ id: otherWriter, title: 'Synthetic marker' }]);
+  });
+  const change = vi.fn(async (action: StudyAction) => {
+    expect(action.action).toBe('checkpoint');
+    if (action.action === 'checkpoint')
+      expect(action.answer).toBe('Cloud answer');
+    return initial;
+  });
+  renderEditor(initial, change);
+  await screen.findByDisplayValue('Cloud answer');
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Look up Synthetic marker' }),
+  );
+  await waitFor(() => expect(change).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/content/vocabulary',
+      expect.objectContaining({ method: 'POST' }),
+    ),
+  );
+  expect(screen.queryByText('A neutral marker definition.')).toBeNull();
+  await act(async () => {
+    disclose(
+      Response.json({
+        id: otherWriter,
+        title: 'Synthetic marker',
+        definition: 'A neutral marker definition.',
+        intuition: 'Neutral intuition.',
+        example: 'Neutral example.',
+      }),
+    );
+  });
+  await screen.findByText('A neutral marker definition.');
+  expect(
+    screen
+      .getByLabelText('I used a definition, hint, or outside help.')
+      .getAttribute('disabled'),
+  ).not.toBeNull();
+  expect(
+    (
+      screen.getByLabelText(
+        'I used a definition, hint, or outside help.',
+      ) as HTMLInputElement
+    ).checked,
+  ).toBe(true);
+  expect((await readDraft(userId, itemId, writerId))?.answer).toBe(
+    'Cloud answer',
+  );
+  expect((await readDraft(userId, itemId, writerId))?.assisted).toBe(true);
 });
 
 it('discards prior-account poll results after logout and after another account loads', async () => {
@@ -195,7 +266,7 @@ it('preserves two tab snapshots and never restores another account', async () =>
 
 it('forks duplicated documents into separate offline snapshots and restores each original snapshot on reload', async () => {
   const initial = state();
-  initial.questions = [
+  initial.pinnedQuestions = [
     {
       id: questionId,
       question_id: 'lifetime',
@@ -283,6 +354,86 @@ it('forks duplicated documents into separate offline snapshots and restores each
       ).value,
     ).toBe('Duplicate tab offline answer'),
   );
+});
+
+it('opens a pinned historical version after saving and pausing an active draft when the catalog is empty', async () => {
+  const initial = state();
+  const historicalId = '30000000-0000-4000-8000-000000000005';
+  initial.items[0] = {
+    ...initial.items[0],
+    paused: true,
+    lease_device: null,
+    lease_until: null,
+  };
+  initial.items.push({
+    ...initial.items[0],
+    id: historicalId,
+    question_version_id: historicalId,
+    state: 'submitted',
+  });
+  initial.pinnedQuestions = [questionId, historicalId].map((id) => ({
+    id,
+    question_id: id,
+    version: 1,
+    title: id === questionId ? 'Active question' : 'Historical question',
+    skill: 'C++',
+    content_blocks: [{ type: 'text', text: 'Explain ownership.' }],
+    content_review: 'candidate',
+  }));
+  initial.attempts = [
+    {
+      id: historicalId,
+      item_id: historicalId,
+      question_version_id: historicalId,
+      answer_text: 'Immutable historical answer',
+      submitted_at: initial.serverNow,
+      active_ms: 0,
+      confidence: 'unsure',
+      assisted: true,
+      source: 'first',
+    },
+  ];
+  initial.jobs = [
+    {
+      attempt_id: historicalId,
+      state: 'failed',
+      generation: 1,
+      error_code: 'UNAVAILABLE',
+      request_count: 0,
+    },
+  ];
+  vi.mocked(readState).mockResolvedValue(initial);
+  vi.mocked(changeState).mockImplementation(async (action) => {
+    expect(action).toMatchObject({
+      action: 'checkpoint',
+      timingAction: 'pause',
+      answer: 'Cloud answer',
+    });
+    return { state: initial, result: null };
+  });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+    Response.json({ entries: [], catalogRevision: '1', nextCursor: null }),
+  );
+  render(<Trainer />);
+  await screen.findByRole('textbox', { name: 'Your answer' });
+  expect(
+    (
+      screen.getByRole('button', {
+        name: /Historical question/,
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Save, pause & view history' }),
+  );
+  await screen.findByText(/No content has qualified/);
+  fireEvent.click(screen.getByRole('button', { name: /Historical question/ }));
+  await screen.findByText('Answer saved. History preserved.');
+  fireEvent.click(
+    screen.getByText('Submitted answer & immutable revisions (0)'),
+  );
+  await screen.findByText('Immutable historical answer');
+  expect(screen.getByText(/First attempt · Assisted/)).toBeTruthy();
 });
 
 it('adopts matching cloud data on a timer-owner rejection without forcing a draft choice', async () => {

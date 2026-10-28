@@ -118,6 +118,7 @@ def run(command):
     elif command == "types":
         local_status()
         types = cli("gen", "types", "typescript", "--local")
+        types = "\n".join(line.rstrip() for line in types.splitlines()) + "\n"
         (ROOT / "lib/contracts/database.types.ts").write_text(types)
     print(f"Local Supabase {command} complete. No credentials printed.")
 

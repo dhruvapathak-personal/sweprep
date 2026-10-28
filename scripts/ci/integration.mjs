@@ -65,6 +65,20 @@ if (sqlCheck.status !== 0 || sqlCheck.stdout.trim() !== '1')
     'CI SQL is unreachable. Use isolated Linux loopback networking and psql.',
   );
 const recoverySecret = randomBytes(32).toString('hex');
+const contentAdmin = spawnSync(
+  'psql',
+  [
+    '-X',
+    '-w',
+    '-v',
+    'ON_ERROR_STOP=1',
+    '-c',
+    'grant content_importer, content_publisher to postgres',
+  ],
+  { encoding: 'utf8', env: sqlEnv },
+);
+if (contentAdmin.status !== 0)
+  throw new Error('Isolated content test administration is unavailable.');
 const baseUrl = 'http://localhost:3001';
 const log = openSync('/tmp/sweprep-integration-app.log', 'w', 0o600);
 const server = spawn(
@@ -87,6 +101,7 @@ const server = spawn(
       RECOVERY_SECRET: recoverySecret,
       APP_URL: baseUrl,
       GRADING_MODE: 'simulated',
+      CONTENT_POLICY_VERSION: 'content-policy-v1',
       ALLOW_LOCAL_SIMULATION: 'true',
     },
   },

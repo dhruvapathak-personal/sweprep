@@ -11,6 +11,11 @@ import {
 } from '@/lib/client/drafts';
 import { readState } from '@/lib/client/api';
 import { formatActiveTime } from '@/lib/domain/timing';
+import {
+  linkedTermsSchema,
+  termDefinitionSchema,
+} from '@/lib/contracts/content';
+import type { z } from 'zod';
 
 type CheckpointAction = Extract<
   StudyAction,
@@ -52,6 +57,11 @@ export function AnswerEditor({
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState(false);
   const [now, setNow] = useState(0);
+  const [terms, setTerms] = useState<z.infer<typeof linkedTermsSchema>>([]);
+  const [definition, setDefinition] =
+    useState<z.infer<typeof termDefinitionSchema>>();
+  const [lookupStatus, setLookupStatus] = useState('');
+  const lookupKeys = useRef(new Map<string, string>());
   const localWrites = useRef(Promise.resolve());
   const mounted = useRef(true);
   const saveSoon = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,6 +75,23 @@ export function AnswerEditor({
       mounted.current = false;
     };
   }, []);
+  useEffect(() => {
+    const abort = new AbortController();
+    void fetch(`/api/content/vocabulary?itemId=${item.id}`, {
+      cache: 'no-store',
+      signal: abort.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        const result = linkedTermsSchema.parse(await response.json());
+        if (!abort.signal.aborted) setTerms(result);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted)
+          setLookupStatus('Vocabulary lookup is unavailable.');
+      });
+    return () => abort.abort();
+  }, [item.id]);
 
   const persist = useCallback((value: DraftSnapshot) => {
     localWrites.current = localWrites.current
@@ -437,6 +464,53 @@ export function AnswerEditor({
       setStatus('Cloud copy selected. Resume to take over timing if needed.');
   }
 
+  async function lookup(termId: string) {
+    if (!(await save('pause')) || !mounted.current) return;
+    pending.current = true;
+    setBusy(true);
+    setLookupStatus('Recording assistance before showing the definition…');
+    try {
+      let key = lookupKeys.current.get(termId);
+      if (!key) {
+        key = crypto.randomUUID();
+        lookupKeys.current.set(termId, key);
+      }
+      const response = await fetch('/api/content/vocabulary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, itemId: item.id, termId }),
+      });
+      if (!response.ok) throw new Error();
+      const result = termDefinitionSchema.parse(await response.json());
+      const fresh = await readState();
+      if (!mounted.current || fresh?.userId !== state.userId) return;
+      const remote = fresh.items.find((value) => value.id === item.id);
+      if (!remote?.assisted || !current.current) throw new Error();
+      cloud.current = remote;
+      setAcknowledgedItem(remote);
+      const next = {
+        ...current.current,
+        baseVersion: remote.version,
+        assisted: true,
+      };
+      accept(next);
+      await persist(next).catch(() => {});
+      updated(fresh);
+      setDefinition(result);
+      setLookupStatus(
+        'Assistance recorded permanently. A lookup does not award vocabulary or concept mastery.',
+      );
+    } catch {
+      if (mounted.current)
+        setLookupStatus(
+          'Lookup not confirmed. Assistance may already be recorded; retry safely.',
+        );
+    } finally {
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
+
   if (!draft) return <p role="status">{status}</p>;
   const authoritative = acknowledgedItem;
   const serverNow = now ? now + serverOffset : Date.parse(state.serverNow);
@@ -472,6 +546,38 @@ export function AnswerEditor({
       <label className="sr-only" htmlFor="answer">
         Your answer
       </label>
+      {terms.length > 0 && (
+        <section className="notice" aria-labelledby="vocabulary-title">
+          <h4 id="vocabulary-title">Safe vocabulary lookup</h4>
+          <p>
+            Looking up a definition permanently marks this answer assisted. Your
+            draft is saved and paused first.
+          </p>
+          <div className="actions">
+            {terms.map((term) => (
+              <button
+                className="secondary"
+                key={term.id}
+                disabled={busy || isBlocked || Boolean(draft.submission)}
+                onClick={() => void lookup(term.id)}
+              >
+                Look up {term.title}
+              </button>
+            ))}
+          </div>
+          {definition && (
+            <div>
+              <h4>{definition.title}</h4>
+              <p>{definition.definition}</p>
+              <p>{definition.intuition}</p>
+              <p>{definition.example}</p>
+            </div>
+          )}
+          <p role="status" aria-live="polite">
+            {lookupStatus}
+          </p>
+        </section>
+      )}
       <textarea
         id="answer"
         value={draft.answer}

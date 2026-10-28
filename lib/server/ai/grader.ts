@@ -3,8 +3,10 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import { gradeDetailsSchema, questionSchema } from '@/lib/contracts/study';
 import { assertLiveGrading } from '@/lib/server/env';
+import { contentPolicy } from '@/lib/contracts/content';
 
 export const workSchema = z.object({
+  qualificationPolicy: z.string().nullable().default(null),
   job: z.object({
     attempt_id: z.uuid(),
     generation: z.number().int().positive(),
@@ -95,7 +97,7 @@ export function providerFailure(error: unknown, requestCount: number) {
     error instanceof Error &&
     [
       'LIVE_GRADING_DISABLED',
-      'CONTENT_NOT_REVIEWED',
+      'QUALIFICATION_REQUIRED',
       'BUDGET_EXCEEDED',
       'REQUEST_LIMIT',
       'SIMULATED_FAILURE',
@@ -108,10 +110,14 @@ export function providerFailure(error: unknown, requestCount: number) {
 
 export async function requestGrade(work: GradingWork, repair: boolean) {
   const env = assertLiveGrading();
-  if (work.question.content_review !== 'approved')
-    throw new Error('CONTENT_NOT_REVIEWED');
+  if (
+    work.question.content_review !== 'approved' ||
+    work.qualificationPolicy !== contentPolicy
+  )
+    throw new Error('QUALIFICATION_REQUIRED');
   const input = JSON.stringify({
     question: work.question.content_blocks,
+    assumptions: work.question.assumptions ?? null,
     rubric: work.rubric,
     learnerAnswer: work.attempt.answer_text,
   });

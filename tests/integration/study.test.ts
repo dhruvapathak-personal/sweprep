@@ -8,6 +8,8 @@ import { workSchema } from '@/lib/server/ai/grader';
 import { recoverOne } from '@/lib/server/services/recover-grading';
 import { stateSchema } from '@/lib/contracts/study';
 import { replayReview, type ReviewEvent } from '@/lib/domain/review';
+import { installBundles } from '@/tests/integration/helpers';
+import { questionBundle } from '@/tests/fixtures/content';
 import { activeMsOnLocalDay } from '@/lib/domain/timing';
 
 const url = process.env.TEST_SUPABASE_URL ?? '';
@@ -21,7 +23,7 @@ let admin: SupabaseClient<Database>;
 let a: SupabaseClient<Database>;
 let b: SupabaseClient<Database>;
 let uid: string;
-const question = '10000000-0000-4000-8000-000000000001';
+const question = '40000000-0000-4000-8000-000000000001';
 const device = randomUUID();
 const scored = {
   outcome: 'scored',
@@ -138,6 +140,9 @@ beforeAll(async () => {
   if (new URL(url).hostname !== '127.0.0.1')
     throw new Error('Local database required.');
   admin = client(serviceKey);
+  installBundles([
+    questionBundle('synthetic-study-regression', {}, { id: question }),
+  ]);
   ({ db: a, id: uid } = await user());
   ({ db: b } = await user());
   process.env.NEXT_PUBLIC_SUPABASE_URL = url;
@@ -547,10 +552,9 @@ describe('real authenticated database', { concurrent: false }, () => {
   it('uses the second-request delay when malformed output is followed by a repair timeout', async () => {
     const learner = await user();
     const approvedQuestion = randomUUID();
-    sql(`insert into public.question_versions(id,question_id,version,title,skill,skill_id,content_blocks,content_review,prompt_version)
-      select '${approvedQuestion}','synthetic-repair-test',1,title,skill,skill_id,content_blocks,'approved',prompt_version from public.question_versions where id='${question}';
-      insert into private.rubrics(question_version_id,version,pass_score,required_claims,reference_answer)
-      select '${approvedQuestion}',version,pass_score,required_claims,reference_answer from private.rubrics where question_version_id='${question}'`);
+    installBundles([
+      questionBundle('synthetic-repair-test', {}, { id: approvedQuestion }),
+    ]);
     const item = await learner.db.rpc('start_study', {
       p_question: approvedQuestion,
       p_timezone: 'UTC',
@@ -569,7 +573,7 @@ describe('real authenticated database', { concurrent: false }, () => {
     expect(attempt.error).toBeNull();
     for (const [name, value] of Object.entries({
       GRADING_MODE: 'live',
-      CONTENT_REVIEW_APPROVED: 'true',
+      CONTENT_POLICY_VERSION: 'content-policy-v1',
       MODEL_EVAL_APPROVED: 'true',
       PROVIDER_DATA_POLICY_APPROVED: 'true',
       DEPLOYMENT_RECOVERY_APPROVED: 'true',
