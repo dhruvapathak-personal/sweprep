@@ -26,6 +26,15 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      {
+        extends: true,
+        test: {
+          name: 'live',
+          include: ['tests/live/**/*.test.ts'],
+          testTimeout: 60000,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });

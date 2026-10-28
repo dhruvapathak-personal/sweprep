@@ -87,6 +87,18 @@ SQL preflight and the test process share a sanitized libpq environment with both
 
 The unit suite covers review graduation at both 30 elapsed UTC days **and** ten consecutive unassisted successes, relapse, neutral unscored outcomes, separate evidence tracks, local-day/DST timing, IndexedDB conflicts and the real SDK using mocked provider transport. Those mocks are not model-quality evidence.
 
+### Opt-in hosted-service smoke tests
+
+After confirming `.env.local` points to your isolated hosted DEV project and the OpenAI live-grading approval flags and budgets are intentionally enabled, run:
+
+```bash
+RUN_LIVE_SERVICE_TESTS=true npm run test:live-services
+```
+
+These tests are excluded from normal `npm test` and CI. They read one hosted question ID with the service-role key, check the hosted Google provider settings and start a PKCE authorization request far enough to confirm Supabase redirects to Google's authorization endpoint, then make one Responses API call using only synthetic arithmetic content. No hosted records are written. The OpenAI call can incur a charge; its actual cost is checked against the configured ten-cent reservation. Do not run these tests against production.
+
+The OAuth smoke test does not complete Google consent, exchange a real callback code, prove existing-account identity linking, or validate production redirects. Those still require the manual browser checks above.
+
 ## Deployment and live-grading gates
 
 Ordinary API requests use a verified Supabase user and RLS, never the service-role key. Rubrics stay in a private schema. Only authenticated worker functions can reserve provider cost and append grades. Treat the service-role and recovery credentials as secrets.

@@ -15,6 +15,7 @@
     "format:check": "prettier --check .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
+    "test:live-services": "node --env-file-if-exists=.env.local ./node_modules/vitest/vitest.mjs run --project live",
     "test:integration:ci": "node scripts/ci/integration.mjs",
     "worker": "node --env-file=.env.local scripts/recovery.mjs"
   },
