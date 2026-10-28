@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 coverage/
 .playwright-cli/
+graphify-out/
 *.tsbuildinfo
 supabase/.temp/
 supabase/.branches/

@@ -13,13 +13,14 @@
   "postCreateCommand": "npm ci",
   "runArgs": ["--init", "--network=bridge", "--userns=keep-id"],
   "remoteEnv": {
-    "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}",
-    "HOST_SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+    "CONTAINER_HOST": "unix:///run/podman/podman.sock",
+    "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock"
   },
   "mounts": [
-    "source=${localEnv:SSH_AUTH_SOCK},target=${localEnv:SSH_AUTH_SOCK},type=bind", // Mount the SSH agent socket into the container
+    "source=${localEnv:HOME}/.ssh/agent/ssh-agent.sock,target=/tmp/ssh-agent.sock,type=bind", // Mount host SSH agent socket into the container
     "source=${localEnv:HOME}/.ssh/known_hosts,target=/home/dhruva/.ssh/known_hosts,type=bind,readonly", // Mount the known_hosts file into the container for github fingerprint verification
     "source=${localEnv:HOME}/.ssh/id_ed25519.pub,target=/home/dhruva/.ssh/id_ed25519.pub,type=bind,readonly", // Mount the public SSH key into the container for github code signing
+    "source=${localEnv:XDG_RUNTIME_DIR}/podman/podman.sock,target=/run/podman/podman.sock,type=bind",
     "source=sweprep-editor-state,target=/home/dhruva/.vscode-server,type=volume",
     "source=sweprep-copilot-state,target=/home/dhruva/.copilot,type=volume",
     "source=sweprep-codex-state,target=/home/dhruva/.codex,type=volume"
