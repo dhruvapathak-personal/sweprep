@@ -28,7 +28,19 @@ RUN apt-get update \
     && visudo -cf /etc/sudoers.d/dhruva \
     && install -d -o dhruva -g dhruva \
     /home/dhruva/.vscode-server /home/dhruva/.copilot /home/dhruva/.codex \
-    /home/dhruva/.pixi /home/dhruva/.pixi/bin
+    /home/dhruva/.pixi /home/dhruva/.pixi/bin \
+    /opt/devcontainer-mcp/npm /opt/devcontainer-mcp/playwright-browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/devcontainer-mcp/playwright-browsers
+RUN npm install --global --prefix /opt/devcontainer-mcp/npm --no-audit --no-fund \
+    @modelcontextprotocol/server-filesystem@2.0.1 \
+    @playwright/mcp@0.0.83 \
+    playwright@1.64.0-alpha-1790635538000 \
+    podman-mcp-server@0.0.15 \
+    && python3 -m venv /opt/devcontainer-mcp/git-venv \
+    && /opt/devcontainer-mcp/git-venv/bin/pip install --no-cache-dir \
+    "git+https://github.com/modelcontextprotocol/servers.git@ef9808f71090d0db3eda99e2af2ba78f1086f4fb#subdirectory=src/git" \
+    && /opt/devcontainer-mcp/npm/bin/playwright install-deps chromium \
+    && /opt/devcontainer-mcp/npm/bin/playwright install chromium
 RUN curl -fsSL https://pixi.sh/install.sh -o /tmp/install-pixi.sh \
     && PIXI_BIN_DIR=/usr/local/bin PIXI_NO_PATH_UPDATE=1 PIXI_NO_TELEMETRY=1 sh /tmp/install-pixi.sh \
     && rm /tmp/install-pixi.sh

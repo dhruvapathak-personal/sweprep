@@ -1,0 +1,34 @@
+{
+  "servers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "/opt/devcontainer-mcp/npm/bin/mcp-server-filesystem",
+      "args": ["/workspace/sweprep"]
+    },
+    "git": {
+      "type": "stdio",
+      "command": "/opt/devcontainer-mcp/git-venv/bin/python",
+      "args": ["-m", "mcp_server_git", "--repository", "/workspace/sweprep"]
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "supabase": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp?read_only=true"
+    },
+    "container": {
+      "type": "stdio",
+      "command": "/opt/devcontainer-mcp/npm/bin/podman-mcp-server",
+      "env": {
+        "CONTAINER_HOST": "unix:///run/podman/podman.sock"
+      }
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "/opt/devcontainer-mcp/npm/bin/playwright-mcp",
+      "args": ["--browser", "chromium"]
+    }
+  }
+}
