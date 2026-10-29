@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { contentDigest } from '@/lib/content/manifest';
+import { contentDigest, validateManifest } from '@/lib/content/manifest';
 import {
   manifestFor,
   questionBundle,
@@ -23,6 +23,115 @@ import {
 } from './helpers';
 
 describe('content-only import and publication capabilities', () => {
+  it('matches the database serialized block-byte boundary for ASCII and Unicode', () => {
+    for (const first of [
+      'a'.repeat(10000),
+      'λ'.repeat(5000),
+      '"\n\\'.repeat(2500),
+    ]) {
+      for (const bytes of [19999, 20000, 20001]) {
+        const bundle = questionBundle(`block-bytes-${randomUUID()}`, {
+          blocks: [
+            { type: 'text', text: first },
+            { type: 'text', text: '' },
+          ],
+        });
+        const base = Number(
+          sql(
+            `select octet_length((${literal(bundle)}->'payload'->'blocks')::text)`,
+          ),
+        );
+        bundle.payload.blocks[1].text = 'x'.repeat(bytes - base);
+        bundle.digest = contentDigest(
+          Object.fromEntries(
+            Object.entries(bundle).filter(([key]) => key !== 'digest'),
+          ),
+        );
+        expect(
+          Number(
+            sql(
+              `select octet_length((${literal(bundle)}->'payload'->'blocks')::text)`,
+            ),
+          ),
+        ).toBe(bytes);
+        if (bytes < 20000) {
+          expect(validateManifest(manifestFor([bundle])).bundles).toHaveLength(
+            1,
+          );
+          expect(importBundles([bundle]).imported).toBe(1);
+        } else {
+          expect(() => validateManifest(manifestFor([bundle]))).toThrow(
+            /BLOCKS_TOO_LARGE/,
+          );
+          expect(() => importBundles([bundle])).toThrow(/VALIDATION_ERROR/);
+        }
+      }
+    }
+  });
+  it('matches the database bundle limit and rejects oversized aggregate manifests', () => {
+    const accepted: ReturnType<typeof termBundle>[] = [];
+    for (const bytes of [99999, 100000, 100001]) {
+      const bundle = termBundle(`bundle-bytes-${randomUUID()}`);
+      const source = bundle.sources[0];
+      bundle.sources = Array.from({ length: 20 }, (_, index) => ({
+        ...source,
+        id: index ? `${source.id}-${index}` : source.id,
+        useMode: 'permitted_reuse',
+        rightsBasis: 'r'.repeat(1000),
+        attribution: 'λ'.repeat(500),
+        payloadDigest: 'a'.repeat(64),
+        intendedUse: 'i'.repeat(1000),
+      }));
+      let remaining =
+        bytes - Number(sql(`select octet_length(${literal(bundle)}::text)`));
+      for (const record of bundle.sources) {
+        const length = Math.min(remaining, 1000);
+        record.rightsBasis += 'r'.repeat(length);
+        remaining -= length;
+        const attribution = Math.min(remaining, 1500);
+        record.attribution += 'a'.repeat(attribution);
+        remaining -= attribution;
+      }
+      expect(remaining).toBe(0);
+      bundle.digest = contentDigest(
+        Object.fromEntries(
+          Object.entries(bundle).filter(([key]) => key !== 'digest'),
+        ),
+      );
+      expect(Number(sql(`select octet_length(${literal(bundle)}::text)`))).toBe(
+        bytes,
+      );
+      if (bytes <= 100000) {
+        expect(validateManifest(manifestFor([bundle])).bundles).toHaveLength(1);
+        expect(importBundles([bundle]).imported).toBe(1);
+        accepted.push(bundle);
+      } else {
+        expect(() => validateManifest(manifestFor([bundle]))).toThrow(
+          /BUNDLE_TOO_LARGE/,
+        );
+        expect(() => importBundles([bundle])).toThrow(/VALIDATION_ERROR/);
+      }
+    }
+    const manifest = manifestFor(
+      Array.from({ length: 10 }, () => {
+        const bundle = {
+          ...accepted[1],
+          id: randomUUID(),
+          stableId: `bundle-bytes-${randomUUID()}`,
+        };
+        bundle.digest = contentDigest(
+          Object.fromEntries(
+            Object.entries(bundle).filter(([key]) => key !== 'digest'),
+          ),
+        );
+        return bundle;
+      }),
+    );
+    expect(() => validateManifest(manifest)).toThrow(/MANIFEST_TOO_LARGE/);
+    expect(() =>
+      sql(`select private.import_content_manifest(${literal(manifest)})`),
+    ).toThrow(/VALIDATION_ERROR/);
+  });
   it('runs the real candidate-import CLI twice under the importer capability', () => {
     const directory = mkdtempSync(join(tmpdir(), 'sweprep-import-'));
     const path = join(directory, 'manifest.json');

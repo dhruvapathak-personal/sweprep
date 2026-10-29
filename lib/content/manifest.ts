@@ -10,6 +10,30 @@ import {
 const text = z.string().min(1);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const identity = text.max(100).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/);
+function jsonbTextBytes(value: unknown): number {
+  if (Array.isArray(value))
+    return (
+      2 +
+      value.reduce((bytes, child) => bytes + jsonbTextBytes(child), 0) +
+      Math.max(0, value.length - 1) * 2
+    );
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value);
+    return (
+      2 +
+      entries.reduce(
+        (bytes, [key, child]) =>
+          bytes +
+          Buffer.byteLength(JSON.stringify(key)) +
+          2 +
+          jsonbTextBytes(child),
+        0,
+      ) +
+      Math.max(0, entries.length - 1) * 2
+    );
+  }
+  return Buffer.byteLength(JSON.stringify(value));
+}
 const sourceSchema = z
   .object({
     id: identity,
@@ -113,6 +137,13 @@ export const bundleSchema = z
       .strict(),
   ])
   .superRefine((bundle, context) => {
+    if (jsonbTextBytes(bundle) > 100000)
+      context.addIssue({ code: 'custom', message: 'BUNDLE_TOO_LARGE' });
+    if (
+      bundle.kind === 'question' &&
+      jsonbTextBytes(bundle.payload.blocks) >= 20000
+    )
+      context.addIssue({ code: 'custom', message: 'BLOCKS_TOO_LARGE' });
     const sources = new Map(
       bundle.sources.map((source) => [source.id, source]),
     );
@@ -152,7 +183,10 @@ export const manifestSchema = z
     bundles: z.array(bundleSchema).min(1).max(10),
     checksum: digest,
   })
-  .strict();
+  .strict()
+  .refine((manifest) => jsonbTextBytes(manifest) <= 1000000, {
+    message: 'MANIFEST_TOO_LARGE',
+  });
 export type ContentBundle = z.infer<typeof bundleSchema>;
 export type ContentManifest = z.infer<typeof manifestSchema>;
 

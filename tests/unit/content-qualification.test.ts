@@ -114,6 +114,31 @@ describe('offline manifest contract', () => {
       qualification: 'not performed',
     });
   });
+  it('rejects aggregate serialized block bytes, including multibyte text, before importing', () => {
+    for (const text of ['a'.repeat(10000), 'λ'.repeat(5000)]) {
+      const bundle = questionBundle('oversize-blocks', {
+        blocks: [
+          { type: 'text', text },
+          { type: 'text', text },
+        ],
+      });
+      expect(() => validateManifest(manifestFor([bundle]))).toThrow(
+        /BLOCKS_TOO_LARGE/,
+      );
+      const path = join(
+        mkdtempSync(join(tmpdir(), 'sweprep-block-limit-')),
+        'input.json',
+      );
+      writeFileSync(path, JSON.stringify(manifestFor([bundle])));
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          ['scripts/content-import.ts', 'dry-run', path],
+          { stdio: 'pipe' },
+        ),
+      ).toThrow();
+    }
+  });
 });
 it('never treats an old human flag or unknown policy as authorization', () => {
   for (const [key, value] of Object.entries({
