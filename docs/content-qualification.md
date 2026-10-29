@@ -1,6 +1,6 @@
 # Imported-candidate qualification
 
-The Node 24 operator CLI processes immutable candidates already installed by the offline importer. It does not generate a bank, fetch a URL, scrape a website, publish, revoke or modify learner data. No paid call, hosted write, model-release evaluation or live activation is authorized by installing this code.
+The Node 24 operator CLI processes immutable candidates already installed by the offline importer. It does not generate a bank, fetch a URL, scrape a website, publish, revoke or modify learner data. No paid call, hosted write, model-release evaluation or live activation is authorized by installing this code. The separate [independent release-evaluation path](model-release-evaluation.md) can prepare the retained record for a later release decision; it does not require or grant the qualifier's prior model approval.
 
 ## Authority and gates
 

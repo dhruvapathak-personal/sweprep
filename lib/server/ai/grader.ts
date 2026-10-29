@@ -4,10 +4,8 @@ import { z } from 'zod';
 import { gradeDetailsSchema, questionSchema } from '@/lib/contracts/study';
 import { assertLiveGrading } from '@/lib/server/env';
 import { contentPolicy } from '@/lib/contracts/content';
-import {
-  gradingInstructions,
-  providerResultSchema,
-} from '@/lib/contracts/grading';
+import { gradingTask, gradingOutput } from '@/lib/contracts/grading';
+import { providerBaseUrl, structuredRequest } from '@/lib/content/provider';
 
 export const workSchema = z.object({
   qualificationPolicy: z.string().nullable().default(null),
@@ -110,38 +108,25 @@ export async function requestGrade(work: GradingWork, repair: boolean) {
     work.qualificationPolicy !== contentPolicy
   )
     throw new Error('QUALIFICATION_REQUIRED');
-  const input = JSON.stringify({
-    question: work.question.content_blocks,
-    assumptions: work.question.assumptions ?? null,
-    rubric: work.rubric,
-    learnerAnswer: work.attempt.answer_text,
-  });
-  const instructions = gradingInstructions(repair);
-  const schema = z.toJSONSchema(providerResultSchema);
-  if (Buffer.byteLength(input + instructions + JSON.stringify(schema)) > 64000)
-    throw new Error('INVALID_OUTPUT');
+  const task = gradingTask(
+    {
+      question: work.question.content_blocks,
+      assumptions: work.question.assumptions ?? null,
+      rubric: work.rubric,
+      learnerAnswer: work.attempt.answer_text,
+    },
+    repair,
+  );
   const client = new OpenAI({
+    baseURL: providerBaseUrl,
     apiKey: process.env.OPENAI_API_KEY,
     maxRetries: 0,
     timeout: 30000,
   });
   const started = Date.now();
-  const response = await client.responses.create({
-    model: env.OPENAI_MODEL ?? modelId,
-    instructions,
-    input,
-    store: false,
-    max_output_tokens: 3000,
-    reasoning: { effort: 'none' },
-    text: {
-      format: {
-        type: 'json_schema',
-        name: 'technical_grade',
-        strict: true,
-        schema,
-      },
-    },
-  });
+  const response = await client.responses.create(
+    structuredRequest(task, env.OPENAI_MODEL ?? modelId, 'technical_grade'),
+  );
   const parsedUsage = z
     .object({
       input_tokens: z.number().int().min(0).max(1000000),
@@ -157,20 +142,9 @@ export async function requestGrade(work: GradingWork, repair: boolean) {
     outputTokens: usage?.output_tokens ?? null,
     latencyMs: Date.now() - started,
   };
-  let result: z.infer<typeof providerResultSchema> | undefined;
-  if (
-    response.status === 'completed' &&
-    typeof response.output_text === 'string' &&
-    response.output_text.length <= 20000
-  ) {
-    try {
-      const parsed = providerResultSchema.safeParse(
-        JSON.parse(response.output_text),
-      );
-      if (parsed.success) result = parsed.data;
-    } catch {
-      /* Invalid provider text stays unscored and uses the persisted repair budget. */
-    }
-  }
-  return { result: result?.assessment, actualCents, metadata };
+  return {
+    result: gradingOutput(response) ?? undefined,
+    actualCents,
+    metadata,
+  };
 }
