@@ -73,7 +73,7 @@ const contentAdmin = spawnSync(
     '-v',
     'ON_ERROR_STOP=1',
     '-c',
-    'grant content_importer, content_publisher to postgres',
+    'grant content_importer, content_publisher, qualification_operator, qualification_worker to postgres',
   ],
   { encoding: 'utf8', env: sqlEnv },
 );
