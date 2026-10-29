@@ -19,3 +19,47 @@ export function gradingInstructions(repair: boolean) {
       : '')
   );
 }
+
+export function gradingTask(
+  data: {
+    question: unknown;
+    assumptions: string | null;
+    rubric: {
+      version: string;
+      pass_score: number;
+      required_claims: string[];
+      reference_answer: string;
+    };
+    learnerAnswer: string;
+  },
+  repair: boolean,
+) {
+  const input = JSON.stringify(data);
+  const instructions = gradingInstructions(repair);
+  const jsonSchema = z.toJSONSchema(providerResultSchema);
+  if (
+    Buffer.byteLength(input + instructions + JSON.stringify(jsonSchema)) > 64000
+  )
+    throw new Error('INVALID_OUTPUT');
+  return { input, instructions, jsonSchema };
+}
+
+export function gradingOutput(response: {
+  status?: string;
+  output_text?: string;
+}) {
+  if (
+    response.status !== 'completed' ||
+    typeof response.output_text !== 'string' ||
+    response.output_text.length > 20000
+  )
+    return null;
+  try {
+    const parsed = providerResultSchema.safeParse(
+      JSON.parse(response.output_text),
+    );
+    return parsed.success ? parsed.data.assessment : null;
+  } catch {
+    return null;
+  }
+}
