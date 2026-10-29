@@ -463,6 +463,98 @@ describe('separately authorized release evaluation', () => {
     expect(await evaluateOnce(run)).toBeNull();
     expect(transport).toHaveBeenCalledTimes(4);
   });
+  it('does not replenish an exhausted allowance when candidate and linked identities are relabeled', async () => {
+    const { plan, run } = enroll({ maxRequests: 1 });
+    currentRun = run;
+    const transport = provider(plan);
+    expect(await evaluateOnce(run)).toMatchObject({
+      state: 'completed',
+      requestsUsed: 1,
+      reason: 'REQUEST_LIMIT',
+    });
+    const input = structuredClone(plan.package);
+    input.id = `relabeled-${randomUUID()}`;
+    input.dataset.id = `relabeled-${randomUUID()}`;
+    const identities = new Map<string, string>();
+    for (const entry of input.dataset.cases)
+      for (const bundle of [
+        entry.candidate as ContentBundle,
+        ...entry.dependencies,
+      ])
+        identities.set(bundle.id, identities.get(bundle.id) ?? randomUUID());
+    input.dataset.cases = JSON.parse(
+      JSON.stringify(input.dataset.cases),
+      (_key, value) =>
+        typeof value === 'string' ? (identities.get(value) ?? value) : value,
+    );
+    const rehashCandidates = () => {
+      for (const entry of input.dataset.cases) {
+        entry.dependencies = entry.dependencies.map((b) => rehash(b));
+        const candidate = entry.candidate as ContentBundle;
+        candidate.dependencies = candidate.dependencies.map((d) => ({
+          ...d,
+          digest: entry.dependencies.find((b) => b.id === d.id)!.digest,
+        }));
+        entry.candidate = rehash(candidate);
+      }
+    };
+    rehashCandidates();
+    const relabeled = compileEvaluation(rehash(input), plan.configuration);
+    expect(() =>
+      admin(
+        `set role evaluation_operator;select private.evaluation_open(${literal(relabeled)})`,
+      ),
+    ).toThrow(/EVALUATION_REVISION_REQUIRED/);
+    identities.clear();
+    for (const entry of input.dataset.cases) {
+      identities.set(entry.id, `relabeled-${randomUUID()}`);
+      for (const bundle of [
+        entry.candidate as ContentBundle,
+        ...entry.dependencies,
+      ]) {
+        identities.set(bundle.stableId, `relabeled-${randomUUID()}`);
+        for (const source of bundle.sources)
+          identities.set(source.id, `source-${randomUUID()}`);
+        bundle.version = 2;
+        bundle.parentId = randomUUID();
+        for (const source of bundle.sources)
+          source.accessedAt = '2026-10-29T00:00:00Z';
+      }
+    }
+    input.dataset.cases = JSON.parse(
+      JSON.stringify(input.dataset.cases),
+      (_key, value) =>
+        typeof value === 'string' ? (identities.get(value) ?? value) : value,
+    ).reverse();
+    rehashCandidates();
+    expect(() =>
+      admin(
+        `set role evaluation_operator;select private.evaluation_open(${literal(compileEvaluation(rehash(input), plan.configuration))})`,
+      ),
+    ).toThrow(/EVALUATION_REVISION_REQUIRED/);
+    expect(await evaluateOnce(run)).toBeNull();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      admin(
+        `select count(*) from private.provider_requests where evaluation_run='${run}'`,
+      ),
+    ).toBe('1');
+    const linked = input.dataset.cases.find((c) => c.dependencies.length)!;
+    const term = linked.dependencies[0];
+    if (term.kind !== 'term') throw new Error('TERM_REQUIRED');
+    term.payload.definition += ' A different synthetic meaning.';
+    input.dataset.version++;
+    rehashCandidates();
+    const changed = compileEvaluation(rehash(input), plan.configuration);
+    const changedRun = admin(
+      `set role evaluation_operator;select private.evaluation_open(${literal(changed)})`,
+    );
+    expect(changedRun).not.toBe(run);
+    const work = claim(changedRun);
+    expect(
+      evaluationSql('reserve', [changedRun, work.lease, false]),
+    ).toBeTruthy();
+  });
   it('bounds crashes and stale leases without replacing the run or refunding unknown usage', async () => {
     const { plan, run } = enroll();
     currentRun = run;

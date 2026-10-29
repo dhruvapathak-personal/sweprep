@@ -101,6 +101,64 @@ language sql stable set search_path='' as $$
   from private.evaluation_jobs j join private.evaluation_inputs i using(id) where j.id=p_run;
 $$;
 
+create function private.evaluation_scope_references(value jsonb,sources jsonb,terms jsonb) returns jsonb
+language plpgsql immutable set search_path='' as $$
+declare result jsonb; field text; child jsonb;
+begin
+  if jsonb_typeof(value)='object' then
+    result:='{}';
+    for field,child in select * from jsonb_each(value) loop
+      if field='sourceId' then child:=coalesce(sources->(child#>>'{}'),child);
+      elsif field='termId' then child:=coalesce(terms->(child#>>'{}'),child);
+      elsif field='sourceIds' and jsonb_typeof(child)='array' then
+        select coalesce(jsonb_agg(coalesce(sources->(v#>>'{}'),v) order by n),'[]') into child
+          from jsonb_array_elements(child) with ordinality a(v,n);
+      else child:=private.evaluation_scope_references(child,sources,terms);
+      end if;
+      result:=result||jsonb_build_object(field,child);
+    end loop;
+    return result;
+  elsif jsonb_typeof(value)='array' then
+    return (select coalesce(jsonb_agg(private.evaluation_scope_references(v,sources,terms) order by n),'[]')
+      from jsonb_array_elements(value) with ordinality a(v,n));
+  end if;
+  return value;
+end;
+$$;
+create function private.evaluation_scope_case(c jsonb) returns jsonb
+language plpgsql immutable set search_path='' as $$
+declare bundles jsonb:=jsonb_build_array(c->'candidate')||coalesce(c->'dependencies','[]');
+  normalized jsonb:='{}'; keys jsonb:='{}'; sources jsonb; b jsonb; body jsonb; prior_count integer; completed integer:=0; result jsonb;
+begin
+  if jsonb_typeof(c->'candidate') is distinct from 'object' or c->'candidate'->>'id' is null then return c-'id'; end if;
+  if (select count(distinct v->>'id') from jsonb_array_elements(bundles) v)<>jsonb_array_length(bundles)
+    then raise exception 'EVALUATION_INPUT_INVALID'; end if;
+  loop
+    prior_count:=completed;
+    for b in select v from jsonb_array_elements(bundles) v where not normalized ? (v->>'id') loop
+      if exists(select 1 from jsonb_array_elements(coalesce(b->'dependencies','[]')) d where not keys ? (d->>'id')) then continue; end if;
+      select coalesce(jsonb_object_agg(s->>'id',private.content_digest(s-array['id','accessedAt'])),'{}') into sources
+        from jsonb_array_elements(coalesce(b->'sources','[]')) s;
+      body:=private.evaluation_scope_references(b-array['id','stableId','version','parentId','digest'],sources,keys);
+      body:=jsonb_set(body,'{sources}',(select coalesce(jsonb_agg(s-array['id','accessedAt'] order by private.content_digest(s-array['id','accessedAt'])),'[]')
+        from jsonb_array_elements(coalesce(b->'sources','[]')) s));
+      body:=jsonb_set(body,'{dependencies}',(select coalesce(jsonb_agg(keys->(d->>'id') order by keys->>(d->>'id')),'[]')
+        from jsonb_array_elements(coalesce(b->'dependencies','[]')) d));
+      normalized:=normalized||jsonb_build_object(b->>'id',body);
+      keys:=keys||jsonb_build_object(b->>'id',private.content_digest(body));
+      completed:=completed+1;
+    end loop;
+    exit when completed=jsonb_array_length(bundles);
+    if completed=prior_count then raise exception 'EVALUATION_INPUT_INVALID'; end if;
+  end loop;
+  select coalesce(jsonb_object_agg(s->>'id',private.content_digest(s-array['id','accessedAt'])),'{}') into sources
+    from jsonb_array_elements(coalesce(c->'candidate'->'sources','[]')) s;
+  result:=private.evaluation_scope_references(c-array['id','candidate','dependencies'],sources,keys);
+  return result||jsonb_build_object('candidate',normalized->(c->'candidate'->>'id'),
+    'dependencies',(select coalesce(jsonb_agg(normalized->(d->>'id') order by keys->>(d->>'id')),'[]')
+      from jsonb_array_elements(coalesce(c->'dependencies','[]')) d));
+end;
+$$;
 create function private.evaluation_open(p_plan jsonb) returns uuid
 language plpgsql security definer set search_path='' as $$
 declare configuration jsonb:=p_plan->'configuration'; key text; id uuid; previous private.evaluation_inputs; plan_identity text; study_scope text;
@@ -161,7 +219,8 @@ begin
       and plan->'package'->'dataset'->'version'=p_plan->'package'->'dataset'->'version' and plan->>'datasetDigest'<>p_plan->>'datasetDigest')
     then raise exception 'EVALUATION_REVISION_REQUIRED'; end if;
   study_scope:=private.content_digest(jsonb_build_object(
-    'cases',(select jsonb_agg(c-'id' order by private.content_digest(c-'id')) from jsonb_array_elements(p_plan->'package'->'dataset'->'cases') c),
+    'cases',(select jsonb_agg(normalized order by private.content_digest(normalized))
+      from (select private.evaluation_scope_case(c) normalized from jsonb_array_elements(p_plan->'package'->'dataset'->'cases') c) cases),
     'codeDigest',configuration->>'codeDigest','modelVersion',configuration->>'modelVersion','protocolVersion',configuration->>'protocolVersion'));
   select * into previous from private.evaluation_inputs where scope=study_scope;
   if found then
@@ -480,7 +539,7 @@ $$;
 do $$
 declare signature text;
 begin
-  foreach signature in array array['evaluation_case(uuid)','evaluation_context(uuid)','evaluation_open(jsonb)','evaluation_advance(uuid)','evaluation_claim(uuid)',
+  foreach signature in array array['evaluation_case(uuid)','evaluation_context(uuid)','evaluation_scope_references(jsonb,jsonb,jsonb)','evaluation_scope_case(jsonb)','evaluation_open(jsonb)','evaluation_advance(uuid)','evaluation_claim(uuid)',
     'evaluation_reserve(uuid,uuid,boolean)','evaluation_complete(uuid,uuid,uuid,jsonb,text,integer,jsonb)','evaluation_acceptance(jsonb,jsonb)','evaluation_mismatches(jsonb,jsonb,text)',
     'evaluation_finish(uuid,uuid,text)','evaluation_yield(uuid,uuid,text)','evaluation_export(uuid)'] loop
     execute 'alter function private.'||signature||' owner to evaluation_engine';
