@@ -4,7 +4,7 @@ The text-answer study loop has Google-only sign-in, cloud and local drafts, expl
 
 **This is a development build, not a validated interview assessment.** The five legacy candidates and 25 example assessments are not qualified and cannot be started. Migrations release no content. No live model evaluation or paid provider call has been performed. Voice, vocabulary practice, adaptive sessions, charts, offline question loading and PWA installation are not implemented.
 
-The approved [automated content and post-grade learning design](docs/automated-content-feedback-spec.md) is implemented only through its first foundation slice. Production qualification execution, source fetching, content release, post-grade dialogue, corrections and revocation remain unavailable. Human answer-key pre-review is not a qualification prerequisite; privacy, model evaluation, spending and deployment remain independent gates.
+The approved [automated content and post-grade learning design](docs/automated-content-feedback-spec.md) now includes a disabled, content-only [qualification worker](docs/content-qualification.md) for imported candidates. Live model quality, successful isolated code execution and hosted worker deployment remain unverified. Source fetching, automatic content release, post-grade dialogue, corrections and revocation remain unavailable. Human answer-key pre-review is not a qualification prerequisite; privacy, model evaluation, spending and deployment remain independent gates.
 
 ## Local setup
 
@@ -141,7 +141,7 @@ Configure the libpq service through a protected service/pass file or secret mana
 
 Publication is a separate `content_publisher` capability with only a fixed-search-path function. It accepts stored candidate IDs/digests, trusted qualification IDs and expected heads, not supplied content or approval flags. It validates exact policy, evidence/source/dependency digests, required checks, independent task identities, fixture results, execution applicability, similarity policy and bounded-request receipts, then commits content/rubric/links/events/heads atomically. Its content-only execution role cannot read learner answers or grades, administer accounts or write qualification runs.
 
-**Production is intentionally fail-closed:** no qualification writer or author/critic/execution/evaluation worker ships here. Only isolated test administration installs synthetic receipts. The service-role key, an `approved` string, a manifest or `CONTENT_POLICY_VERSION` cannot manufacture trusted evidence. Revocation/requalification and their complete draft archive/restart lifecycle are unavailable; do not edit projections manually. No migration or CLI releases the five legacy candidates.
+**Production is intentionally fail-closed:** the separate [qualification worker](docs/content-qualification.md) can derive private receipts from authorized snapshots and persisted source-review, critic, execution and machine-fixture artifacts. It is disabled by default. No migration grants operator/worker membership or releases content. The service-role key, an `approved` string, a manifest or `CONTENT_POLICY_VERSION` cannot manufacture trusted evidence. Revocation/requalification and their complete draft archive/restart lifecycle are unavailable; do not edit projections manually. No migration or CLI releases the five legacy candidates.
 
 ### Opt-in hosted-service smoke tests
 
@@ -163,7 +163,7 @@ Ordinary API requests use a verified Supabase user and RLS, never the service-ro
 
 Live grading stays disabled until a human completes all of these gates:
 
-1. Deploy and independently review a trusted, content-only qualification worker under the approved policy. Qualify every candidate and dependent term/link with source/rights checks and independent critique. Publish new immutable versions; never relabel seeds. This worker and live publication are not enabled by this foundation.
+1. Independently review and deploy the disabled content-only qualification worker under the approved policy. Qualify every candidate and dependent term/link with authorized source snapshots, rights checks and independent critique. Separately authorize publication of new immutable versions; never relabel seeds. Shipping the worker does not enable live qualification or publication.
 2. Run an explicitly approved, budgeted automated model evaluation against the pinned model/prompt/validator/fixture versions. Require no pass/fail reversals, ambiguous examples unscored and scores within evidence-backed ranges. `MODEL_EVAL_APPROVED` remains separate authorization. No paid evaluation command ships in this slice.
 3. Approve provider retention/data policy. Do not submit confidential employer content or credentials. The adapter requests `store: false`; this does not establish the provider's complete retention policy.
 4. Select and verify a hosted scheduler invoking `POST /api/internal/recover` at least once per minute with `Authorization: Bearer <RECOVERY_SECRET>`. Each invocation processes one job. Verify capacity and request duration for two possible 30-second calls plus finalization within a 90-second lease. A browser poll is not a worker. No hosted scheduler is configured or verified here.
