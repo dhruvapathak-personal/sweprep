@@ -147,6 +147,70 @@ it('saves local reasoning before lookup and reveals a definition only after irre
     'Cloud answer',
   );
   expect((await readDraft(userId, itemId, writerId))?.assisted).toBe(true);
+  expect((await readDraft(userId, itemId, writerId))?.baseVersion).toBe(3);
+});
+
+it('requires an explicit draft choice when confidence changes remotely during lookup', async () => {
+  const initial = state();
+  initial.items[0] = {
+    ...initial.items[0],
+    lease_device: null,
+    lease_until: null,
+    paused: true,
+  };
+  const remote = structuredClone(initial);
+  remote.items[0] = {
+    ...remote.items[0],
+    version: 4,
+    confidence: 'certain',
+    assisted: true,
+  };
+  vi.mocked(readState).mockResolvedValue(remote);
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+    Response.json(
+      init?.method === 'POST'
+        ? {
+            id: otherWriter,
+            title: 'Synthetic marker',
+            definition: 'A neutral marker definition.',
+            intuition: 'Neutral intuition.',
+            example: 'Neutral example.',
+          }
+        : [{ id: otherWriter, title: 'Synthetic marker' }],
+    ),
+  );
+  const change = vi.fn(async (action: StudyAction) => {
+    if (action.action === 'checkpoint' && action.timingAction === 'takeover')
+      return {
+        ...remote,
+        items: [{ ...remote.items[0], confidence: action.confidence }],
+      };
+    return initial;
+  });
+  renderEditor(initial, change);
+  await screen.findByDisplayValue('Cloud answer');
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Look up Synthetic marker' }),
+  );
+  await screen.findByText('Choose a draft to preserve');
+  expect((await readDraft(userId, itemId, writerId))?.baseVersion).toBe(2);
+  expect((await readDraft(userId, itemId, writerId))?.assisted).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Save to cloud' }));
+  expect(change).toHaveBeenCalledTimes(1);
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Keep this device copy & take over' }),
+  );
+  await waitFor(() => expect(change).toHaveBeenCalledTimes(2));
+  expect(change.mock.calls[1][0]).toMatchObject({
+    version: 4,
+    confidence: 'unsure',
+    assisted: true,
+    timingAction: 'takeover',
+  });
+  await waitFor(() =>
+    expect(screen.queryByText('Choose a draft to preserve')).toBeNull(),
+  );
+  expect((await readDraft(userId, itemId, writerId))?.assisted).toBe(true);
 });
 
 it('discards prior-account poll results after logout and after another account loads', async () => {

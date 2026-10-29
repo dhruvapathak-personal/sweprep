@@ -451,8 +451,8 @@ export function AnswerEditor({
         : {
             answer: conflict.answer_text,
             confidence: conflict.confidence,
-            assisted: conflict.assisted,
           }),
+      assisted: current.current.assisted || conflict.assisted,
     };
     accept(next);
     await persist(next).catch(() => {});
@@ -466,6 +466,7 @@ export function AnswerEditor({
 
   async function lookup(termId: string) {
     if (!(await save('pause')) || !mounted.current) return;
+    const paused = cloud.current;
     pending.current = true;
     setBusy(true);
     setLookupStatus('Recording assistance before showing the definition…');
@@ -486,15 +487,27 @@ export function AnswerEditor({
       if (!mounted.current || fresh?.userId !== state.userId) return;
       const remote = fresh.items.find((value) => value.id === item.id);
       if (!remote?.assisted || !current.current) throw new Error();
-      cloud.current = remote;
-      setAcknowledgedItem(remote);
+      const diverged =
+        remote.answer_text !== paused.answer_text ||
+        remote.confidence !== paused.confidence;
       const next = {
         ...current.current,
-        baseVersion: remote.version,
+        baseVersion: diverged ? current.current.baseVersion : remote.version,
         assisted: true,
       };
       accept(next);
       await persist(next).catch(() => {});
+      if (diverged) {
+        blocked.current = true;
+        setIsBlocked(true);
+        setConflict(remote);
+        setStatus(
+          'Sync conflict. Choose which copy to keep; neither was overwritten.',
+        );
+      } else {
+        cloud.current = remote;
+        setAcknowledgedItem(remote);
+      }
       updated(fresh);
       setDefinition(result);
       setLookupStatus(
