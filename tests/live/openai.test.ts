@@ -1,9 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  requestGrade,
-  requestReservationCents,
-  workSchema,
-} from '@/lib/server/ai/grader';
+import { requestGrade, workSchema } from '@/lib/server/ai/grader';
 
 beforeAll(() => {
   if (process.env.RUN_LIVE_SERVICE_TESTS !== 'true')
@@ -12,8 +8,8 @@ beforeAll(() => {
     );
 });
 
-describe('live OpenAI Responses API', () => {
-  it('grades synthetic, non-sensitive content using the configured live model', async () => {
+describe('live provider qualification boundary', () => {
+  it('refuses unqualified smoke content before a provider dispatch', async () => {
     const work = workSchema.parse({
       job: {
         attempt_id: '20000000-0000-4000-8000-000000000001',
@@ -40,15 +36,8 @@ describe('live OpenAI Responses API', () => {
       },
     });
 
-    const result = await requestGrade(work, false);
-    expect(result.result?.outcome).toBe('scored');
-    if (result.result?.outcome === 'scored') {
-      expect(result.result.criticalClaimsMet).toBe(true);
-      expect(result.result.score).toBeGreaterThanOrEqual(3);
-    }
-    expect(result.actualCents).toBeDefined();
-    expect(result.actualCents).toBeLessThanOrEqual(requestReservationCents);
-    expect(result.metadata.inputTokens).toBeGreaterThan(0);
-    expect(result.metadata.outputTokens).toBeGreaterThan(0);
+    await expect(requestGrade(work, false)).rejects.toThrow(
+      /LIVE_GRADING_DISABLED|QUALIFICATION_REQUIRED/,
+    );
   });
 });

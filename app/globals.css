@@ -552,6 +552,15 @@ input[type='checkbox'] {
 .question-list {
   margin-top: 30px;
 }
+.catalog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.catalog-filters > div {
+  flex: 1 1 140px;
+  min-width: 0;
+}
 .question-choice {
   width: 100%;
   display: flex;

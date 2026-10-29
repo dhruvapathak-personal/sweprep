@@ -24,6 +24,12 @@ export const questionSchema = z.object({
   skill: z.string().max(100),
   content_blocks: z.array(blockSchema).max(20),
   content_review: z.enum(['candidate', 'approved']),
+  domain: z.string().nullable().optional(),
+  category: z.string().nullable().optional(),
+  assumptions: z.string().max(2000).nullable().optional(),
+  secondary_skills: z.array(z.string()).nullable().optional(),
+  prerequisites: z.array(z.string()).nullable().optional(),
+  difficulty: z.number().int().min(1).max(5).nullable().optional(),
 });
 export const draftFields = {
   itemId: z.uuid(),
@@ -129,8 +135,8 @@ export const stateSchema = z.object({
   gradingMode: z.enum(['disabled', 'simulated', 'live']),
   serverNow: z.string(),
   todayMs: z.number().nonnegative(),
-  questions: z.array(questionSchema).max(100),
-  items: z.array(itemSchema).max(100),
+  pinnedQuestions: z.array(questionSchema).max(101),
+  items: z.array(itemSchema).max(101),
   attempts: z
     .array(
       z.object({

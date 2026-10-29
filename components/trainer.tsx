@@ -9,11 +9,13 @@ import { Login } from '@/components/login';
 import { Question } from '@/components/question';
 import { AnswerEditor } from '@/components/answer-editor';
 import { Grade } from '@/components/grade';
+import { ContentCatalog } from '@/components/content-catalog';
 
 export function Trainer() {
   const [state, setState] = useState<StudyState | null | undefined>(undefined);
   const [selected, setSelected] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [deviceId, setDeviceId] = useState('');
@@ -112,6 +114,11 @@ export function Trainer() {
       }
     } catch (reason) {
       if (epoch !== authEpoch.current) return;
+      if (
+        reason instanceof Error &&
+        ['CONTENT_CHANGED', 'CONTENT_REVOKED'].includes(reason.message)
+      )
+        setCatalogEpoch((value) => value + 1);
       setError(
         reason instanceof Error ? reason.message : 'Request unavailable.',
       );
@@ -158,7 +165,7 @@ export function Trainer() {
       active ??
       state?.items[0])
     : null;
-  const question = state?.questions.find(
+  const question = state?.pinnedQuestions.find(
     (value) => value.id === item?.question_version_id,
   );
   const attempt = state?.attempts.find((value) => value.item_id === item?.id);
@@ -228,10 +235,10 @@ export function Trainer() {
                     : 'Readiness: insufficient evidence'}
               </strong>
               <span>
-                Five candidate questions await human review.{' '}
+                Only policy-qualified current content is offered.{' '}
                 {state.gradingMode === 'simulated'
                   ? 'Local demo scores do not assess your answer and never update mastery.'
-                  : 'Live use requires reviewed content, evaluation and deployment approval.'}
+                  : 'Qualification execution and live release remain disabled; model, privacy, budget and recovery approval are separate.'}
               </span>
             </div>
             <div className="workspace">
@@ -291,7 +298,7 @@ export function Trainer() {
                     <p>
                       {active
                         ? 'Your active answer stays in your cloud history. Resume it before beginning another question.'
-                        : 'One question per session. All five seeds are draft content, not an evaluated curriculum.'}
+                        : 'One question per session. Unqualified candidates stay private; an empty bank does not unlock them.'}
                     </p>
                     {active && (
                       <button
@@ -304,33 +311,18 @@ export function Trainer() {
                         Resume saved draft →
                       </button>
                     )}
-                    <div className="question-list">
-                      {state.questions.map((value, index) => (
-                        <button
-                          className="question-choice"
-                          key={value.id}
-                          disabled={busy || Boolean(active)}
-                          onClick={() =>
-                            void run({
-                              action: 'start',
-                              questionId: value.id,
-                              timezone:
-                                Intl.DateTimeFormat().resolvedOptions()
-                                  .timeZone,
-                            })
-                          }
-                        >
-                          <span className="question-number">
-                            {String(index + 1).padStart(2, '0')}
-                          </span>
-                          <span>
-                            <strong>{value.title}</strong>
-                            <small>{value.skill}</small>
-                          </span>
-                          <span aria-hidden="true">↗</span>
-                        </button>
-                      ))}
-                    </div>
+                    <ContentCatalog
+                      key={`${state.userId}:${catalogEpoch}`}
+                      disabled={busy || Boolean(active)}
+                      start={(id) =>
+                        void run({
+                          action: 'start',
+                          questionId: id,
+                          timezone:
+                            Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        })
+                      }
+                    />
                   </section>
                 )}
               </article>
@@ -367,7 +359,7 @@ export function Trainer() {
                         const job = state.jobs.find(
                           (entry) => entry.attempt_id === value.id,
                         );
-                        const title = state.questions.find(
+                        const title = state.pinnedQuestions.find(
                           (entry) => entry.id === value.question_version_id,
                         )?.title;
                         return (

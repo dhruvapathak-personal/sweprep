@@ -2,7 +2,7 @@
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
-  
+
   "graphql_public": {
           Tables: {
             [_ in never]: never
@@ -141,18 +141,44 @@ isOneToOne: false
                     "created_at"?: string,"timezone"?: string,"user_id"?: string
                   }
                   Relationships: [
-                    
+
                   ]
-                },"question_versions": {
+                },"question_terms": {
                   Row: {
-                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"skill_id": string,"title": string,"version": number
+                    "exposure": string,"question_version_id": string,"required": boolean,"term_version_id": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "content_blocks": NonNullable<Json>,"content_review": string,"id": string,"prompt_version": string,"question_id": string,"skill": string,"skill_id": string,"title": string,"version": number
+                    "exposure": string,"question_version_id": string,"required": boolean,"term_version_id": string
                   }
                   Update: {
-                    "content_blocks"?: NonNullable<Json>,"content_review"?: string,"id"?: string,"prompt_version"?: string,"question_id"?: string,"skill"?: string,"skill_id"?: string,"title"?: string,"version"?: number
+                    "exposure"?: string,"question_version_id"?: string,"required"?: boolean,"term_version_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "question_terms_question_version_id_fkey"
+      columns: ["question_version_id"]
+isOneToOne: false
+      referencedRelation: "question_versions"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "question_terms_term_version_id_fkey"
+      columns: ["term_version_id"]
+isOneToOne: false
+      referencedRelation: "vocabulary_term_versions"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"question_versions": {
+                  Row: {
+                    "assumptions": string | null,"category": string | null,"content_blocks": NonNullable<Json>,"content_review": string,"difficulty": number | null,"domain": string | null,"id": string,"prerequisites": (string)[] | null,"prompt_version": string,"question_id": string,"secondary_skills": (string)[] | null,"skill": string,"skill_id": string,"title": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "assumptions"?: string | null,"category"?: string | null,"content_blocks": NonNullable<Json>,"content_review": string,"difficulty"?: number | null,"domain"?: string | null,"id": string,"prerequisites"?: (string)[] | null,"prompt_version": string,"question_id": string,"secondary_skills"?: (string)[] | null,"skill": string,"skill_id": string,"title": string,"version": number
+                  }
+                  Update: {
+                    "assumptions"?: string | null,"category"?: string | null,"content_blocks"?: NonNullable<Json>,"content_review"?: string,"difficulty"?: number | null,"domain"?: string | null,"id"?: string,"prerequisites"?: (string)[] | null,"prompt_version"?: string,"question_id"?: string,"secondary_skills"?: (string)[] | null,"skill"?: string,"skill_id"?: string,"title"?: string,"version"?: number
                   }
                   Relationships: [
                     {
@@ -221,7 +247,7 @@ isOneToOne: false
                     "id"?: string,"started_at"?: string,"state"?: string,"user_id"?: string
                   }
                   Relationships: [
-                    
+
                   ]
                 },"timing_segments": {
                   Row: {
@@ -242,6 +268,66 @@ isOneToOne: false
       referencedRelation: "session_items"
       referencedColumns: ["id","user_id"]
     }
+                  ]
+                },"vocabulary_events": {
+                  Row: {
+                    "created_at": string,"id": string,"idempotency_key": string,"item_id": string | null,"kind": string,"term_version_id": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"id"?: string,"idempotency_key": string,"item_id"?: string | null,"kind": string,"term_version_id": string,"user_id": string
+                  }
+                  Update: {
+                    "created_at"?: string,"id"?: string,"idempotency_key"?: string,"item_id"?: string | null,"kind"?: string,"term_version_id"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "vocabulary_events_item_id_user_id_fkey"
+      columns: ["item_id","user_id"]
+isOneToOne: false
+      referencedRelation: "session_items"
+      referencedColumns: ["id","user_id"]
+    },{
+      foreignKeyName: "vocabulary_events_term_version_id_fkey"
+      columns: ["term_version_id"]
+isOneToOne: false
+      referencedRelation: "vocabulary_term_versions"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"vocabulary_term_versions": {
+                  Row: {
+                    "id": string,"qualification_id": string,"term_id": string,"title": string,"version": number
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "id": string,"qualification_id": string,"term_id": string,"title": string,"version": number
+                  }
+                  Update: {
+                    "id"?: string,"qualification_id"?: string,"term_id"?: string,"title"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "vocabulary_term_versions_term_id_fkey"
+      columns: ["term_id"]
+isOneToOne: false
+      referencedRelation: "vocabulary_terms"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"vocabulary_terms": {
+                  Row: {
+                    "domain": string,"id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "domain": string,"id": string
+                  }
+                  Update: {
+                    "domain"?: string,"id"?: string
+                  }
+                  Relationships: [
+
                   ]
                 }
           }
@@ -279,11 +365,26 @@ isOneToOne: false
 "claim_grading":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
+"content_catalog":
+{ Args: { "p_category"?: string,"p_cursor"?: string,"p_domain"?: string,"p_kind": string,"p_limit"?: number }; Returns: Json
+                           },
+"content_is_qualified":
+{ Args: { "p_current"?: boolean,"p_id": string }; Returns: boolean
+                           },
 "fail_grading":
 { Args: { "p_attempt": string,"p_error": string,"p_generation": number,"p_lease": string,"p_retry_seconds": number }; Returns: undefined
                            },
 "finalize_grade":
 { Args: { "p_attempt": string,"p_generation": number,"p_lease": string,"p_model": string,"p_result": Json,"p_simulated": boolean }; Returns: string
+                           },
+"item_vocabulary":
+{ Args: { "p_item": string }; Returns: Json
+                           },
+"lookup_vocabulary":
+{ Args: { "p_item": string,"p_key": string,"p_term": string }; Returns: Json
+                           },
+"record_vocabulary_exposure":
+{ Args: { "p_key": string,"p_term": string }; Returns: string
                            },
 "reserve_provider_request":
 { Args: { "p_attempt": string,"p_cents": number,"p_daily_cap": number,"p_generation": number,"p_lease": string,"p_monthly_cap": number,"p_repair": boolean }; Returns: string
@@ -421,11 +522,11 @@ export type CompositeTypes<
 export const Constants = {
   "graphql_public": {
           Enums: {
-            
+
           }
         },"public": {
           Enums: {
-            
+
           }
         }
 } as const

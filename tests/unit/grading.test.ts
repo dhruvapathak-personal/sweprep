@@ -21,6 +21,7 @@ const assessment = {
   explanation: 'The view does not extend lifetime.',
 };
 const work = workSchema.parse({
+  qualificationPolicy: 'content-policy-v1',
   job: {
     attempt_id: '20000000-0000-4000-8000-000000000001',
     generation: 1,
@@ -52,7 +53,7 @@ function environment(live = false) {
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'synthetic-key',
     APP_URL: 'http://localhost:3000',
     GRADING_MODE: live ? 'live' : 'disabled',
-    CONTENT_REVIEW_APPROVED: 'true',
+    CONTENT_POLICY_VERSION: 'content-policy-v1',
     MODEL_EVAL_APPROVED: 'true',
     PROVIDER_DATA_POLICY_APPROVED: 'true',
     DEPLOYMENT_RECOVERY_APPROVED: 'true',
@@ -132,7 +133,7 @@ describe('grading boundaries without paid calls', () => {
         },
         false,
       ),
-    ).rejects.toThrow('CONTENT_NOT_REVIEWED');
+    ).rejects.toThrow('QUALIFICATION_REQUIRED');
     expect(fetch).not.toHaveBeenCalled();
   });
   it('rejects hosted simulation and budgets above approved caps', () => {

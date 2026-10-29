@@ -2,7 +2,7 @@ import 'server-only';
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import type { Database } from '@/lib/contracts/database.types';
 import { stateSchema, type StudyAction } from '@/lib/contracts/study';
-import { gradingMode } from '@/lib/server/env';
+import { assertContentPolicy, gradingMode } from '@/lib/server/env';
 import { dbError } from '@/lib/server/http';
 
 export async function readStudy(db: SupabaseClient<Database>, user: User) {
@@ -25,6 +25,7 @@ export async function changeStudy(
   input: StudyAction,
 ) {
   if (input.action === 'start') {
+    assertContentPolicy();
     const result = await db.rpc('start_study', {
       p_question: input.questionId,
       p_timezone: input.timezone,

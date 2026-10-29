@@ -2,6 +2,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/lib/contracts/database.types';
 import { gradeDetailsSchema } from '@/lib/contracts/study';
+import { contentPolicy } from '@/lib/contracts/content';
 import { assertLiveGrading, gradingMode, serverEnv } from '@/lib/server/env';
 import {
   modelId,
@@ -34,8 +35,11 @@ export async function recoverOne(db: SupabaseClient<Database>) {
       result = simulatedGrade(work);
     } else {
       assertLiveGrading();
-      if (work.question.content_review !== 'approved')
-        throw new Error('CONTENT_NOT_REVIEWED');
+      if (
+        work.question.content_review !== 'approved' ||
+        work.qualificationPolicy !== contentPolicy
+      )
+        throw new Error('QUALIFICATION_REQUIRED');
       const env = serverEnv();
       const dispatch = async (repair: boolean) => {
         const reservation = checked(

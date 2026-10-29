@@ -13,6 +13,11 @@ const statuses: Record<string, number> = {
   GRADING_PENDING: 409,
   RETRY_LIMIT: 429,
   SETUP_REQUIRED: 503,
+  CONTENT_CHANGED: 409,
+  CONTENT_REVOKED: 409,
+  CATALOG_CHANGED: 409,
+  VERSION_CONFLICT: 409,
+  FEATURE_DISABLED: 503,
 };
 
 export function json(data: unknown, status = 200) {

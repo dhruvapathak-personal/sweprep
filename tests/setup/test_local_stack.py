@@ -93,6 +93,22 @@ class LocalStackTests(unittest.TestCase):
                 stack.run("start")
             command.assert_called_once_with("--version")
 
+    def test_types_normalize_generator_trailing_whitespace(self):
+        target = self.root / "lib" / "contracts"
+        target.mkdir(parents=True)
+
+        def cli(*args):
+            if args == ("gen", "types", "typescript", "--local"):
+                return "export type Database = {  \n  \n}\n"
+            return self.cli(*args)
+
+        with patch.object(stack, "cli", side_effect=cli):
+            stack.run("types")
+        self.assertEqual(
+            (target / "database.types.ts").read_text(),
+            "export type Database = {\n\n}\n",
+        )
+
     def test_unsafe_engine_selection_cannot_invoke_any_cli_command(self):
         config = self.root / "docker-config"
         config.mkdir()

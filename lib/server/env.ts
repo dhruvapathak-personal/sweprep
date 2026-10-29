@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { contentPolicy } from '@/lib/contracts/content';
 
 const serverSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
@@ -19,7 +20,7 @@ const serverSchema = z.object({
   }),
   GRADING_MODE: z.enum(['disabled', 'simulated', 'live']).default('disabled'),
   ALLOW_LOCAL_SIMULATION: z.enum(['true', 'false']).default('false'),
-  CONTENT_REVIEW_APPROVED: z.enum(['true', 'false']).default('false'),
+  CONTENT_POLICY_VERSION: z.string().default(''),
   MODEL_EVAL_APPROVED: z.enum(['true', 'false']).default('false'),
   PROVIDER_DATA_POLICY_APPROVED: z.enum(['true', 'false']).default('false'),
   DEPLOYMENT_RECOVERY_APPROVED: z.enum(['true', 'false']).default('false'),
@@ -58,7 +59,7 @@ export function assertLiveGrading() {
   const env = serverEnv();
   if (
     env.GRADING_MODE !== 'live' ||
-    env.CONTENT_REVIEW_APPROVED !== 'true' ||
+    env.CONTENT_POLICY_VERSION !== contentPolicy ||
     env.MODEL_EVAL_APPROVED !== 'true' ||
     env.PROVIDER_DATA_POLICY_APPROVED !== 'true' ||
     env.DEPLOYMENT_RECOVERY_APPROVED !== 'true' ||
@@ -70,4 +71,9 @@ export function assertLiveGrading() {
     throw new Error('LIVE_GRADING_DISABLED');
   }
   return env;
+}
+
+export function assertContentPolicy() {
+  if (serverEnv().CONTENT_POLICY_VERSION !== contentPolicy)
+    throw new Error('FEATURE_DISABLED');
 }
