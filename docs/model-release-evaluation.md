@@ -2,6 +2,8 @@
 
 This is a separate operator path, not the qualifier's machine-consistency fixtures. Installing it does not approve a model, enable a provider, qualify content, publish content, or change learner data. This implementation was verified with synthetic mocked transport and isolated services. No live model quality, paid call, hosted deployment or successful executable sandbox run was verified.
 
+For the proposed post-pilot rules, see the [offline grading and qualification calibration spec](offline-grading-calibration-spec.md). It requests design approval only; it does not change these runtime contracts or authorize another run.
+
 ## Public implementation and private operational data
 
 This repository is public. Actual questions, canonical rubrics, source-linked answer keys, independent holdout answers and detailed operational reports belong in the permission-checked private archive delivered with the implementation. They are supplemental operational input, intentionally not intended for merging. Production code, schemas, tests and this guide remain in the reviewed PR. Tests in the public repository use explicitly synthetic non-curriculum data only.
