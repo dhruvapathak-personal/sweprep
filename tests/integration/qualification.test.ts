@@ -212,6 +212,7 @@ function provider(
     const sent = JSON.parse(String(init?.body));
     expect(sent.model).toBe('gpt-5.4-mini-2026-03-17');
     expect(sent.store).toBe(false);
+    expect(sent.service_tier).toBe('default');
     expect(sent.tools).toBeUndefined();
     expect(sent.max_output_tokens).toBe(3000);
     expect(sent.text.format.strict).toBe(true);
@@ -337,6 +338,7 @@ function authorTransport(work: ReturnType<typeof openAuthor>, invalid = false) {
       ),
     ).toBe(String(transport.mock.calls.length));
     const sent = JSON.parse(String(init?.body));
+    expect(sent.service_tier).toBe('default');
     expect(sent).toEqual(
       transport.mock.calls.length === 1
         ? work.plan.requests.original

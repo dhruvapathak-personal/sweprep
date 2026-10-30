@@ -366,6 +366,7 @@ describe('grading boundaries without paid calls', () => {
     const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const sent = JSON.parse(String(init?.body));
       expect(sent.store).toBe(false);
+      expect(sent.service_tier).toBe('default');
       expect(sent.tools).toBeUndefined();
       expect(sent.max_output_tokens).toBe(3000);
       expect(sent.text.format.strict).toBe(true);

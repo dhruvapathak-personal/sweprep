@@ -100,6 +100,7 @@ function provider(
     );
     expect(entry).toBeTruthy();
     expect(body.store).toBe(false);
+    expect(body.service_tier).toBe('default');
     expect(body.tools).toBeUndefined();
     expect(body.max_output_tokens).toBe(3000);
     const reserved = JSON.parse(

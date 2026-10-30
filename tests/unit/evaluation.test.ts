@@ -60,6 +60,9 @@ describe('independent release evaluation contracts', () => {
   });
   it('exercises the exact learner request, preserves repair identity and rejects rewritten frozen requests', () => {
     const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+    for (const entry of plan.cases)
+      for (const request of Object.values(entry.requests ?? {}))
+        expect(request.service_tier).toBe('default');
     const entry = plan.cases.find((c) => c.id === 'grade-strong')!;
     const candidate = entry.candidate as ReturnType<
       typeof syntheticPackage

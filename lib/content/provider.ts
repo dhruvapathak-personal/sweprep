@@ -11,6 +11,7 @@ export function structuredRequest(
 ) {
   return {
     model,
+    service_tier: 'default' as const,
     instructions: task.instructions,
     input: task.input,
     store: false as const,
