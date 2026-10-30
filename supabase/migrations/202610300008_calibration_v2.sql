@@ -1,4 +1,25 @@
 grant content_engine,qualification_engine,evaluation_engine to postgres;
+grant create on schema private to evaluation_engine;
+update private.evaluation_jobs j set state='completed',reason='EVALUATION_REVISION_REQUIRED',
+  lease=null,lease_until=null,updated_at=now()
+  from private.evaluation_inputs i where i.id=j.id and j.state<>'completed'
+    and i.plan->'configuration'->>'protocolVersion' is distinct from 'release-evaluation-v2';
+
+create function private.require_current_evaluation() returns trigger
+language plpgsql set search_path='' as $$
+begin
+  if not exists(select 1 from private.evaluation_inputs where id=new.run_id
+    and plan->'configuration'->>'protocolVersion'='release-evaluation-v2')
+    then raise exception 'EVALUATION_DISABLED'; end if;
+  return new;
+end;
+$$;
+alter function private.require_current_evaluation() owner to evaluation_engine;
+revoke all on function private.require_current_evaluation() from public,anon,authenticated,service_role;
+create trigger current_evaluation_observation before insert on private.evaluation_observations
+  for each row execute function private.require_current_evaluation();
+create trigger current_evaluation_report before insert on private.evaluation_reports
+  for each row execute function private.require_current_evaluation();
 
 alter table private.qualification_runs drop constraint qualification_runs_policy_version_check,
   add constraint qualification_runs_policy_version_check check(policy_version in ('content-policy-v1','content-policy-v2'));
@@ -8,7 +29,9 @@ language sql immutable set search_path='' as $$
   select coalesce(b->>'kind'='term' or (
     b->>'kind'='question' and b->'payload'->'rubric'->>'passScore'='4'
     and b->'payload'->'rubric'->>'referenceAnswer' ~ 'Score 5:[[:space:]]*[^[:space:]]'
-    and (select count(distinct lower(btrim(v))) from jsonb_array_elements_text(b->'payload'->'rubric'->'requiredClaims') v)
+    -- Match String.trim() whitespace, including Unicode separators and the byte-order mark.
+    and (select count(distinct lower(btrim(v,U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')))
+      from jsonb_array_elements_text(b->'payload'->'rubric'->'requiredClaims') v)
       = jsonb_array_length(b->'payload'->'rubric'->'requiredClaims')),false);
 $$;
 revoke all on function private.calibrated_rubric_v2(jsonb) from public,anon,authenticated,service_role;
@@ -830,6 +853,9 @@ declare j private.evaluation_jobs; r private.provider_requests; terminal boolean
 begin
   select * into j from private.evaluation_jobs where id=p_run for update;
   if not found or j.state<>'running' or j.lease is distinct from p_lease or j.lease_until<=now() then raise exception 'STALE_LEASE'; end if;
+  if not exists(select 1 from private.evaluation_inputs where id=p_run
+    and plan->'configuration'->>'protocolVersion'='release-evaluation-v2')
+    then raise exception 'EVALUATION_DISABLED'; end if;
   select * into r from private.provider_requests where id=p_request and evaluation_run=p_run and worker_lease=p_lease;
   if not found then raise exception 'REQUEST_REQUIRED'; end if;
   if exists(select 1 from private.evaluation_observations where request_id=p_request) then return private.evaluation_context(p_run); end if;
@@ -859,4 +885,5 @@ end;
 $$;
 
 grant execute on function private.evaluation_acceptance(jsonb,jsonb),private.evaluation_mismatches(jsonb,jsonb,text) to qualification_engine;
+revoke create on schema private from evaluation_engine;
 revoke content_engine,qualification_engine,evaluation_engine from postgres;

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contentDigest, type ContentBundle } from '@/lib/content/manifest';
 import { qualificationSql, qualifyOnce } from '@/lib/content/qualification';
 import { gradingInstructions } from '@/lib/contracts/grading';
+import { calibrationIssues } from '@/lib/content/qualification-contract';
 import { questionBundle, termBundle } from '@/tests/fixtures/content';
 import { authorOnce, authoringSql } from '@/lib/content/authoring';
 import { compileAuthoring } from '@/lib/content/authoring-contract';
@@ -539,6 +540,58 @@ describe('bounded conceptual authoring handoff', () => {
       { id: bundle.id, digest: bundle.digest },
     ]);
   });
+  it('rejects metadata-only authored clones before import of the exact handoff', async () => {
+    const work = openAuthor(candidate('term'));
+    authorTransport(work);
+    await authorOnce(work.id);
+    const authored = authorExport(work.id).work.bundle as ContentBundle;
+    const clone = {
+      ...structuredClone(authored),
+      id: randomUUID(),
+      stableId: `relabeled-${randomUUID()}`,
+      sources: authored.sources.map((source) => ({
+        ...source,
+        id: `source-${randomUUID()}`,
+        accessedAt: '2020-01-01T00:00:00Z',
+      })),
+    };
+    clone.claims = clone.claims.map((claim) => ({
+      ...claim,
+      sourceIds: [clone.sources[0].id],
+    }));
+    const relabeled = rehash(clone);
+    importBundles([relabeled]);
+    const evidence = work.spec.evidence.map((snapshot) => ({
+      ...snapshot,
+      sourceId: relabeled.sources[0].id,
+    }));
+    expect(() =>
+      admin(
+        `set role qualification_operator; select private.qualification_enqueue('${relabeled.id}','${work.batch}',${literal(evidence)})`,
+      ),
+    ).toThrow(/AUTHORING_HANDOFF_REQUIRED/);
+    expect(
+      admin(
+        `select count(*) from private.qualification_inputs where candidate_id='${relabeled.id}'`,
+      ),
+    ).toBe('0');
+    expect(authorExport(work.id).requests).toHaveLength(1);
+    const newEdition = rehash({
+      ...relabeled,
+      id: randomUUID(),
+      stableId: `new-source-${randomUUID()}`,
+      sources: relabeled.sources.map((source) => ({
+        ...source,
+        edition: 'synthetic-v2',
+      })),
+    });
+    importBundles([newEdition]);
+    expect(
+      admin(
+        `set role qualification_operator; select private.qualification_enqueue('${newEdition.id}','${work.batch}',${literal(evidence.map((snapshot) => ({ ...snapshot, edition: 'synthetic-v2' })))})`,
+      ),
+    ).toBeTruthy();
+  });
   it('allows one schema repair, retains charges, and permits only one separately bounded revision', async () => {
     const work = openAuthor();
     const transport = authorTransport(work, true);
@@ -682,6 +735,54 @@ describe('bounded conceptual authoring handoff', () => {
   });
 });
 describe('trusted imported-candidate qualification', () => {
+  it('matches JavaScript trimming for duplicate critical claims', () => {
+    const bundle = candidate();
+    if (bundle.kind !== 'question') throw new Error('Question required');
+    const claim = bundle.payload.rubric.requiredClaims[0];
+    for (const whitespace of [
+      ' ',
+      '\t',
+      '\n',
+      '\v',
+      '\f',
+      '\r',
+      '\u00a0',
+      '\u1680',
+      '\u2000',
+      '\u2001',
+      '\u2002',
+      '\u2003',
+      '\u2004',
+      '\u2005',
+      '\u2006',
+      '\u2007',
+      '\u2008',
+      '\u2009',
+      '\u200a',
+      '\u2028',
+      '\u2029',
+      '\u202f',
+      '\u205f',
+      '\u3000',
+      '\ufeff',
+    ]) {
+      bundle.payload.rubric.requiredClaims = [
+        claim,
+        `${whitespace}${claim.toUpperCase()}${whitespace}`,
+      ];
+      expect(calibrationIssues(bundle)).toEqual([
+        'RUBRIC_CALIBRATION_REQUIRED',
+      ]);
+      expect(
+        admin(`select private.calibrated_rubric_v2(${literal(bundle)})`),
+      ).toBe('f');
+    }
+    bundle.payload.rubric.requiredClaims = [claim, `\u200b${claim}`];
+    expect(calibrationIssues(bundle)).toEqual([]);
+    expect(
+      admin(`select private.calibrated_rubric_v2(${literal(bundle)})`),
+    ).toBe('t');
+  });
   it('rejects mixed calibration configuration and caps above the authorized daily or monthly ceilings', () => {
     for (const overrides of [
       { policyVersion: 'content-policy-v1' },

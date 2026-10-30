@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -147,6 +147,113 @@ afterEach(() => {
 });
 
 describe('separately authorized release evaluation', () => {
+  it('stops in-flight legacy evaluation work on upgrade without rewriting its frozen evidence', () => {
+    const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+    const legacy = {
+      ...plan,
+      configuration: Object.fromEntries(
+        Object.entries(plan.configuration).map(([key, value]) => [
+          key,
+          typeof value === 'string' ? value.replace(/-v2$/, '-v1') : value,
+        ]),
+      ),
+    };
+    legacy.configurationDigest = contentDigest(legacy.configuration);
+    legacy.identity = contentDigest({
+      packageDigest: legacy.packageDigest,
+      datasetDigest: legacy.datasetDigest,
+      codeDigest: legacy.code.digest,
+      protocolVersion: legacy.configuration.protocolVersion,
+      modelVersion: legacy.configuration.modelVersion,
+    });
+    const original = readFileSync(
+      'supabase/migrations/202610290007_model_evaluation.sql',
+      'utf8',
+    );
+    const entryPoints = ['open', 'reserve']
+      .map((name) =>
+        original
+          .match(
+            new RegExp(
+              `create function private\\.evaluation_${name}\\([\\s\\S]*?\\n\\$\\$;`,
+            ),
+          )![0]
+          .replace('create function', 'create or replace function'),
+      )
+      .join('\n');
+    const upgrade = readFileSync(
+      'supabase/migrations/202610300008_calibration_v2.sql',
+      'utf8',
+    ).replace(
+      'create function private.calibrated_rubric_v2',
+      'create or replace function private.calibrated_rubric_v2',
+    );
+    expect(
+      admin(`
+        begin;
+        grant evaluation_engine to postgres;
+        drop trigger if exists current_evaluation_observation on private.evaluation_observations;
+        drop trigger if exists current_evaluation_report on private.evaluation_reports;
+        drop function if exists private.require_current_evaluation();
+        ${entryPoints}
+        set role evaluation_operator;
+        select private.evaluation_open(${literal(legacy)}) as run \\gset
+        set role evaluation_worker;
+        select private.evaluation_claim(:'run')->>'lease' as lease \\gset
+        select private.evaluation_reserve(:'run',:'lease',false) as request \\gset
+        set role postgres;
+        select set_config('test.legacy_run',:'run',true),
+          set_config('test.legacy_lease',:'lease',true),
+          set_config('test.legacy_request',:'request',true);
+        create temporary table legacy_evidence as
+          select private.evaluation_export(:'run') as exported,
+            (select jsonb_agg(to_jsonb(o)) from private.evaluation_observations o where run_id=:'run') as observations,
+            (select jsonb_agg(to_jsonb(r)) from private.provider_requests r where evaluation_run=:'run') as requests;
+        ${upgrade}
+        set role evaluation_worker;
+        do $test$
+        declare run uuid:=current_setting('test.legacy_run')::uuid;
+          lease uuid:=current_setting('test.legacy_lease')::uuid;
+          request uuid:=current_setting('test.legacy_request')::uuid;
+        begin
+          begin
+            perform private.evaluation_complete(run,lease,request,null,'PROVIDER_REJECTED',null,null);
+            raise exception 'LATE_COMPLETION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          begin
+            perform private.evaluation_reserve(run,lease,false);
+            raise exception 'LATE_RESERVATION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          begin
+            perform private.evaluation_finish(run,lease,null);
+            raise exception 'LATE_FINALIZATION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          if private.evaluation_claim(run) is not null then raise exception 'LEGACY_WORK_RECLAIMED'; end if;
+        end;
+        $test$;
+        set role evaluation_operator;
+        select set_config('test.legacy_export',private.evaluation_export(current_setting('test.legacy_run')::uuid)::text,true);
+        set role postgres;
+        do $test$
+        declare run uuid:=current_setting('test.legacy_run')::uuid;
+        begin
+          if exists(select 1 from legacy_evidence e where
+            e.exported is distinct from current_setting('test.legacy_export')::jsonb
+            or e.observations is distinct from (select jsonb_agg(to_jsonb(o)) from private.evaluation_observations o where run_id=run)
+            or e.requests is distinct from (select jsonb_agg(to_jsonb(r)) from private.provider_requests r where evaluation_run=run))
+            then raise exception 'LEGACY_EVIDENCE_CHANGED'; end if;
+        end;
+        $test$;
+        rollback;
+      `),
+    ).not.toContain('ERROR');
+  });
   it('requires coherent frozen scored and uncertain expectations at the SQL boundary', () => {
     for (const change of [
       { minScore: null },

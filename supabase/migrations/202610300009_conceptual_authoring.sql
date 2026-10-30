@@ -1,7 +1,7 @@
 create role authoring_engine nologin noinherit;
 create role authoring_operator nologin noinherit;
 create role authoring_worker nologin noinherit;
-grant authoring_engine,qualification_engine to postgres;
+grant authoring_engine,qualification_engine,evaluation_engine to postgres;
 grant usage on schema private,extensions to authoring_engine;
 grant usage on schema private to authoring_operator,authoring_worker;
 grant create on schema private to authoring_engine,qualification_engine;
@@ -77,6 +77,8 @@ create policy authoring_candidates_read on private.content_candidates for select
 create policy authoring_receipts_read on private.qualification_runs for select to authoring_engine using(true);
 grant execute on function private.content_digest(jsonb),private.canonical_content(jsonb),
   private.validate_content_bundle(jsonb),private.calibrated_rubric_v2(jsonb),private.passing_qualification(uuid,uuid) to authoring_engine;
+grant execute on function private.evaluation_scope_case(jsonb),
+  private.evaluation_scope_references(jsonb,jsonb,jsonb) to qualification_engine;
 grant select,insert,update on private.provider_requests to authoring_engine;
 create policy authoring_cost_totals on private.provider_requests for select to authoring_engine using(true);
 create policy authoring_cost_insert on private.provider_requests for insert to authoring_engine with check(authoring_run is not null);
@@ -334,8 +336,11 @@ begin
       then raise exception 'AUTHORING_HANDOFF_REQUIRED'; end if;
     root:=authored.lineage; ordinal:=authored.run_number;
   else
-    if exists(select 1 from private.authoring_artifacts a where a.error is null
-      and a.bundle-array['id','stableId','version','parentId','digest','origin']=c.bundle-array['id','stableId','version','parentId','digest','origin'])
+    if exists(select 1 from private.authoring_artifacts a join private.authoring_inputs ai on ai.id=a.run_id where a.error is null
+      and private.evaluation_scope_case(jsonb_build_object('candidate',a.bundle-'origin','dependencies',ai.plan->'spec'->'dependencies'))
+        =private.evaluation_scope_case(jsonb_build_object('candidate',c.bundle-'origin','dependencies',
+          (select coalesce(jsonb_agg(d.bundle),'[]') from jsonb_array_elements(c.bundle->'dependencies') ref
+            join private.content_candidates d on d.id=(ref->>'id')::uuid))))
       then raise exception 'AUTHORING_HANDOFF_REQUIRED'; end if;
     root := c.id;
     select i.* into previous from private.qualification_inputs i where i.candidate_id = c.parent_id;
@@ -358,4 +363,4 @@ begin
 end;
 $$;
 revoke create on schema private from authoring_engine,qualification_engine;
-revoke authoring_engine,qualification_engine from postgres;
+revoke authoring_engine,qualification_engine,evaluation_engine from postgres;
