@@ -2,7 +2,7 @@
 
 This is a separate operator path, not the qualifier's machine-consistency fixtures. Installing it does not approve a model, enable a provider, qualify content, publish content, or change learner data. This implementation was verified with synthetic mocked transport and isolated services. No live model quality, paid call, hosted deployment or successful executable sandbox run was verified.
 
-For the proposed post-pilot rules, see the [offline grading and qualification calibration spec](offline-grading-calibration-spec.md). It requests design approval only; it does not change these runtime contracts or authorize another run.
+The approved [offline calibration rules](offline-grading-calibration-spec.md) now govern the v2 runtime contracts. The original v1 package, observations, mismatches and ledger remain historical evidence. V1 approvals do not authorize v2 dispatch.
 
 ## Public implementation and private operational data
 
@@ -30,13 +30,13 @@ The shipped offline configuration has zero budgets and null approval records. It
 
 The canonical package digest hashes the recursively sorted-key package JSON excluding its own `digest`. Source/file/archive SHA-256 values hash their exact bytes. Report files use canonical JSON plus a newline; their names hash the report object without that newline. Do not interchange these digests. Repeating identical offline inputs produces the same report; an existing different file is not overwritten.
 
-For a later independently authorized import, the archive's manifest is accepted by the existing `content-import.ts import` command under `content_importer`. Its `intakes.json` entries need the separately approved qualification batch ID before the existing enqueue command accepts them. An evaluation enrollment does not import candidates or create a qualification batch. No such import, qualification or publication is authorized by this handoff.
+The original v1 archive is historical and does not satisfy v2 intake. Freeze new immutable candidate/rubric/evidence versions and a new dataset/package before v2 evaluation. Use the existing importer under `content_importer` only after the independent release and operational approvals. New intake entries need the exact separately approved qualification batch ID. An evaluation enrollment does not import candidates or create a qualification batch. No such import, qualification or publication is authorized by this handoff.
 
 ## Cases and production identity
 
 The strict package/configuration contracts are in `lib/content/evaluation-contract.ts`. The dataset fixes its ID/version, evidence, candidate/dependency versions, answers, expected outcomes and reference quotations before evaluation. Holdouts must not reuse the staged candidates' identities. Changing labels or thresholds is a new audited baseline, never a silent repair to make a report agree.
 
-Coverage requires policy/source/fixture-author/critic/grading stages, negative source and critic cases, a rights-invalid case and all five grading boundaries: wrong, partial, borderline pass, strong and ambiguous. Additional private cases exercise incorrect fixtures, unsafe contextual term disclosure, private-material patterns, digest drift and snapshot mismatch. Deliberately invalid policy inputs are classified without provider dispatch.
+Coverage requires policy/source/fixture-author/critic/grading stages, negative source and critic cases, a rights-invalid case and five scored grading boundaries (wrong, partial, borderline pass, strong and non-answer) plus a separate `uncertain_context` negative control. The control has insufficient or contradictory assessment context and must produce uncertainty with a specific reason. It stays outside candidate intakes. Additional private cases exercise incorrect fixtures, unsafe contextual term disclosure, private-material patterns, digest drift and snapshot mismatch. Deliberately invalid policy inputs are classified without provider dispatch.
 
 Requests use the actual shared qualification prompts/schemas/validators and the actual learner grading instructions/schema/input shape. Both ordinary and repair bodies are frozen and persisted before transport. The runtime recompiles the entire plan from the frozen package and exact current production source hashes before dispatch; a changed request, source, configuration or code identity blocks it. Source reviewer and critic remain separate requests. The critic does not receive the source reviewer's answer or verdict. Grade requests receive no case kind or expected range.
 
@@ -58,7 +58,7 @@ An operator must first retain separate provider-account/data-policy, privacy, co
 
 - The protocol/model/prompt/schema/fixture/grader/policy identities specified by `evaluationConfiguration`, the current `codeDigest`, and `toolchainVersion=conceptual-no-execution-v1`.
 - `inputUsdPerMillion=0.75`, `outputUsdPerMillion=4.5`, `requestCents=10`, positive daily/monthly/batch budgets and a future UTC expiry.
-- A daily cap at most 100 cents, monthly and batch caps at most 2000 cents, `maxRequests` at most 180, and four non-null approval/authorization digests.
+- A daily cap at most 1000 cents, monthly and batch caps at most 2000 cents, `maxRequests` at most 180, and four non-null approval/authorization digests.
 - `mode=live` for real observations. `mode=mock` labels isolated transport tests as not evaluated; it is provenance, not a built-in free simulator or a bypass of any spend/authorization gate.
 
 All of these environment flags must explicitly equal `true`: `MODEL_EVALUATION_ENABLED`, `MODEL_EVALUATION_PROVIDER_POLICY_APPROVED`, `MODEL_EVALUATION_PRIVACY_APPROVED`, `MODEL_EVALUATION_DEPLOYMENT_APPROVED` and `MODEL_EVALUATION_RUN_AUTHORIZED`. They default to disabled.
@@ -77,16 +77,18 @@ Console output contains only IDs, safe status/reason codes, counts, digests and 
 
 ## Bounds, recovery and reports
 
-All three provider paths reserve in `private.provider_requests` under advisory lock `461920`. A reservation commits before the SDK call. SDK retries are zero. Known bounded usage settles at pinned prices; missing, inconsistent or crashed-call usage retains the full ten-cent reservation. Daily/monthly UTC totals combine grading, qualification and evaluation. A run additionally enforces its batch cap and durable request allowance.
+All four provider paths reserve in `private.provider_requests` under advisory lock `461920`. A reservation commits before the SDK call. SDK retries are zero. Known bounded usage settles at pinned prices; missing, inconsistent or crashed-call usage retains the full ten-cent reservation. Daily/monthly UTC totals combine grading, authoring, qualification and evaluation. A run additionally enforces its batch cap and durable request allowance.
 
 Plans, evidence, observations and reports are immutable. Identical enrollment returns the existing run, including after completion or a crash. Changed budgets, expiry or authorization cannot replace it. Reusing a package ID with different content or a dataset ID/version with different evidence/expectations fails. A separate study-scope identity ignores package/case labels, case order, bundle UUIDs/stable labels/version lineage, source labels/access timestamps and derived bundle digests. It resolves dependency and term links to normalized content identities and source references to retained source metadata, preserving payloads, source editions/rights, evidence bytes and expected outcomes. Relabeling identical cases under the same model/protocol/code cannot replenish allowance. The supplied dependency graph must be complete and acyclic. Meaningful baseline changes require a new audited dataset version and package identity; they remain subject to the shared ledger.
 
 One run has 9–60 cases, at most three requests per case and one schema repair. Crashes consume their persisted slots. A lost repair is not issued again. Runs have 90-second leases; concurrent claim chooses one worker, stale completion/reservation fails, and completed finalization is idempotent. Budget/approval yields retain the same run and reservations. Do not poll them tightly or restart to obtain a new allowance. Expired frozen authorization cannot be renewed in place.
 
-The database derives scored pass/fail from the stored score, frozen pass threshold and critical-claim flag. It reports score-range violations, pass/fail reversals, scored ambiguity, false source/critic acceptance, invalid output and transport/request-limit failures. It derives source/fixture/critic acceptance from stored output as well as checking the worker validator result; an empty observation labeled `CHECK_FAILED` earns no negative-case credit.
+The database derives scored pass/fail from the stored score, frozen pass threshold and critical-claim flag. It reports score-range violations, pass/fail reversals, uncertainty-context outcome reversals, false source/critic acceptance, invalid output and transport/request-limit failures. It derives source/fixture/critic acceptance from stored output as well as checking the worker validator result; an empty observation labeled `CHECK_FAILED` earns no negative-case credit.
 
 Reports separate `deterministic_policy`, `mock_transport` and real `model_observation` cases. Offline and mock reports remain `not_evaluated` even if their conformance expectations match. Live reports say `observed_mismatches` or `observations_complete`, never “approved.” All reports carry `approvalAuthority=none`. A human engineering/risk decision and separately retained release record are still required before any later qualification activation; no mandatory human answer-key pre-review is introduced.
 
 ## Verification
 
 Run the documented format, lint, typecheck, unit, build, Python setup and guarded isolated DB/HTTP commands in the README. The dedicated evaluator tests use the actual worker/SDK with synthetic mocked transport and real isolated private SQL capabilities. They cover immutable replay, forged/empty observations, expected reversals and uncertainty, wrong approvals/zero budgets, bounded repair/crash recovery, concurrent claim, cross-role/HTTP denials and the shared grading/qualification budget. Generated public DB types must remain in parity; all new evaluation tables/functions are private.
+
+The conservative daily recommendation remains 100 cents; the authorized implementation ceilings are 1000 cents/day and 2000 cents/month across all paths. A new database is not an account-global billing ledger. Retain and deduct known external or earlier-run spend before selecting a new bounded cap; never fabricate historical provider requests to carry a balance.
