@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -100,6 +100,8 @@ function provider(
     );
     expect(entry).toBeTruthy();
     expect(body.store).toBe(false);
+    expect(body.service_tier).toBe('default');
+    expect(body.reasoning).toEqual({ effort: 'low' });
     expect(body.tools).toBeUndefined();
     expect(body.max_output_tokens).toBe(3000);
     const reserved = JSON.parse(
@@ -147,11 +149,262 @@ afterEach(() => {
 });
 
 describe('separately authorized release evaluation', () => {
+  it('refuses missing, duplicate and ungrounded facet expectations before enrollment', () => {
+    for (const variant of [
+      'missing',
+      'duplicate',
+      'unknown-source',
+      'masked-negative',
+    ]) {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const entry = plan.package.dataset.cases.find(
+        (c) => c.id === 'source-unsupported',
+      )!;
+      if (variant === 'missing') entry.expected.facets = null;
+      if (variant === 'duplicate')
+        entry.expected.facets!.claims.push(entry.expected.facets!.claims[0]);
+      if (variant === 'unknown-source')
+        entry.expected.facets!.claims[0].sourceId = 'unsupplied';
+      if (variant === 'masked-negative')
+        entry.expected.facets!.claims[0].verdict = 'supported';
+      plan.cases.find((c) => c.id === entry.id)!.expected = entry.expected;
+      plan.package = rehash(plan.package);
+      plan.packageDigest = plan.package.digest;
+      plan.datasetDigest = contentDigest(plan.package.dataset);
+      expect(() =>
+        admin(
+          `set role evaluation_operator; select private.evaluation_open(${literal(plan)})`,
+        ),
+      ).toThrow(/EVALUATION_INPUT_INVALID/);
+    }
+  });
+  it('rejects extra and duplicate critic links at the privileged acceptance boundary', () => {
+    const input = syntheticPackage();
+    const clear = input.dataset.cases.find((c) => c.id === 'critic-clear')!;
+    const linked = input.dataset.cases.find((c) => c.id === 'critic-spoiler')!;
+    const candidate = linked.candidate as ReturnType<typeof questionBundle>;
+    const finding = {
+      termId: candidate.payload.terms[0].termId,
+      exposure: 'pre_attempt_safe',
+      verdict: 'safe',
+      reason: 'Synthetic contextual check.',
+    };
+    for (const entry of [clear, linked]) {
+      const output = modelOutput(entry) as Record<string, unknown>;
+      const valid = entry === clear ? [] : [finding];
+      const accepts = (links: unknown[]) =>
+        admin(
+          `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_acceptance(${literal(entry)},${literal({ ...output, links })}); rollback`,
+        );
+      expect(accepts(valid)).toBe('t');
+      for (const links of [
+        [...valid, { ...finding, termId: randomUUID() }],
+        ...(entry === linked
+          ? [
+              [],
+              [finding, finding],
+              [{ ...finding, termId: randomUUID() }],
+              [{ ...finding, exposure: 'post_grade_only' }],
+              [{ ...finding, verdict: 'spoiler_or_uncertain' }],
+            ]
+          : []),
+      ])
+        expect(accepts(links)).toBe('f');
+    }
+  });
+  it('compares target negative facets even when unrelated flags already reject the output', () => {
+    const input = syntheticPackage();
+    for (const [id, facet] of [
+      ['source-unsupported', 'claims'],
+      ['critic-spoiler', 'links'],
+      ['critic-clear', 'fixtures'],
+    ] as const) {
+      const entry = input.dataset.cases.find((c) => c.id === id)!;
+      const output = modelOutput(entry) as Record<string, unknown>;
+      const expected = structuredClone(entry.expected);
+      if (facet === 'fixtures') {
+        expected.accepted = false;
+        expected.facets!.fixtures[0].verdict = 'unsupported';
+      }
+      const wrong = {
+        ...output,
+        privacy: 'private_or_uncertain',
+        [facet]: (output[facet] as Record<string, unknown>[]).map(
+          (finding) => ({
+            ...finding,
+            verdict: facet === 'links' ? 'safe' : 'supported',
+          }),
+        ),
+      };
+      const mismatches = JSON.parse(
+        admin(
+          `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_mismatches(${literal({ ...entry, expected })},${literal(wrong)},'CHECK_FAILED'); rollback`,
+        ),
+      );
+      expect(mismatches).toContain(`FACET_${facet.toUpperCase()}_MISMATCH`);
+      expect(mismatches).toContain('FACET_PRIVACY_MISMATCH');
+      const corrected = {
+        ...output,
+        [facet]: (output[facet] as Record<string, unknown>[]).map(
+          (finding, index) => ({
+            ...finding,
+            verdict: expected.facets![facet][index].verdict,
+          }),
+        ),
+      };
+      expect(
+        JSON.parse(
+          admin(
+            `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_mismatches(${literal({ ...entry, expected })},${literal(corrected)},'CHECK_FAILED'); rollback`,
+          ),
+        ),
+      ).toEqual([]);
+    }
+  });
+  it.each([1, 2])(
+    'stops in-flight v%s evaluation work on upgrade without rewriting its frozen evidence',
+    (version) => {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const legacy = {
+        ...plan,
+        configuration: Object.fromEntries(
+          Object.entries(plan.configuration).map(([key, value]) => [
+            key,
+            typeof value === 'string'
+              ? value
+                  .replace(/-(prompts|schema)?v3$/, (suffix) =>
+                    suffix.replace('3', String(version)),
+                  )
+                  .replace(/-v2$/, version === 1 ? '-v1' : '-v2')
+              : value,
+          ]),
+        ),
+      };
+      legacy.configurationDigest = contentDigest(legacy.configuration);
+      legacy.identity = contentDigest({
+        packageDigest: legacy.packageDigest,
+        datasetDigest: legacy.datasetDigest,
+        codeDigest: legacy.code.digest,
+        protocolVersion: legacy.configuration.protocolVersion,
+        modelVersion: legacy.configuration.modelVersion,
+      });
+      const original = readFileSync(
+        version === 1
+          ? 'supabase/migrations/202610290007_model_evaluation.sql'
+          : 'supabase/migrations/202610300008_calibration_v2.sql',
+        'utf8',
+      );
+      const entryPoints = ['open', 'reserve']
+        .map((name) =>
+          original
+            .match(
+              new RegExp(
+                `create (?:or replace )?function private\\.evaluation_${name}\\([\\s\\S]*?\\n\\$\\$;`,
+              ),
+            )![0]
+            .replace('create function', 'create or replace function'),
+        )
+        .join('\n');
+      const upgrade = readFileSync(
+        'supabase/migrations/202610300010_evaluation_v3.sql',
+        'utf8',
+      ).replaceAll('create function', 'create or replace function');
+      expect(
+        admin(`
+        begin;
+        grant evaluation_engine to postgres;
+        ${entryPoints}
+        set role evaluation_operator;
+        select private.evaluation_open(${literal(legacy)}) as run \\gset
+        set role evaluation_worker;
+        select private.evaluation_claim(:'run')->>'lease' as lease \\gset
+        select private.evaluation_reserve(:'run',:'lease',false) as request \\gset
+        set role postgres;
+        select set_config('test.legacy_run',:'run',true),
+          set_config('test.legacy_lease',:'lease',true),
+          set_config('test.legacy_request',:'request',true);
+        create temporary table legacy_evidence as
+          select private.evaluation_export(:'run') as exported,
+            (select jsonb_agg(to_jsonb(o)) from private.evaluation_observations o where run_id=:'run') as observations,
+            (select jsonb_agg(to_jsonb(r)) from private.provider_requests r where evaluation_run=:'run') as requests;
+        ${upgrade}
+        set role evaluation_worker;
+        do $test$
+        declare run uuid:=current_setting('test.legacy_run')::uuid;
+          lease uuid:=current_setting('test.legacy_lease')::uuid;
+          request uuid:=current_setting('test.legacy_request')::uuid;
+        begin
+          begin
+            perform private.evaluation_complete(run,lease,request,null,'PROVIDER_REJECTED',null,null);
+            raise exception 'LATE_COMPLETION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          begin
+            perform private.evaluation_reserve(run,lease,false);
+            raise exception 'LATE_RESERVATION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          begin
+            perform private.evaluation_finish(run,lease,null);
+            raise exception 'LATE_FINALIZATION_ACCEPTED';
+          exception when others then
+            if sqlerrm not in ('EVALUATION_DISABLED','STALE_LEASE') then raise; end if;
+          end;
+          if private.evaluation_claim(run) is not null then raise exception 'LEGACY_WORK_RECLAIMED'; end if;
+        end;
+        $test$;
+        set role evaluation_operator;
+        select set_config('test.legacy_export',private.evaluation_export(current_setting('test.legacy_run')::uuid)::text,true);
+        set role postgres;
+        do $test$
+        declare run uuid:=current_setting('test.legacy_run')::uuid;
+        begin
+          if exists(select 1 from legacy_evidence e where
+            e.exported is distinct from current_setting('test.legacy_export')::jsonb
+            or e.observations is distinct from (select jsonb_agg(to_jsonb(o)) from private.evaluation_observations o where run_id=run)
+            or e.requests is distinct from (select jsonb_agg(to_jsonb(r)) from private.provider_requests r where evaluation_run=run))
+            then raise exception 'LEGACY_EVIDENCE_CHANGED'; end if;
+        end;
+        $test$;
+        rollback;
+      `),
+      ).not.toContain('ERROR');
+    },
+  );
+  it('requires coherent frozen scored and uncertain expectations at the SQL boundary', () => {
+    for (const change of [
+      { minScore: null },
+      { minScore: 3 },
+      { minScore: 5, maxScore: 4 },
+      { pass: false },
+      { kind: 'uncertain_context', outcome: 'scored' },
+    ]) {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const entry = plan.package.dataset.cases.find(
+        (c) => c.id === 'grade-borderline_pass',
+      )!;
+      Object.assign(entry.expected.grade!, change);
+      Object.assign(
+        plan.cases.find((c) => c.id === entry.id)!.expected.grade!,
+        change,
+      );
+      plan.package = rehash(plan.package);
+      plan.packageDigest = plan.package.digest;
+      plan.datasetDigest = contentDigest(plan.package.dataset);
+      expect(() =>
+        admin(
+          `set role evaluation_operator;select private.evaluation_open(${literal(plan)})`,
+        ),
+      ).toThrow(/EVALUATION_INPUT_INVALID/);
+    }
+  });
   it.each([
     'source-unsupported',
     'critic-spoiler',
     'fixtures-independent',
-    'grade-ambiguous',
+    'grade-uncertain-context',
   ])(
     'rejects malformed nested observations for %s in database comparisons',
     async (id) => {
@@ -236,9 +489,9 @@ describe('separately authorized release evaluation', () => {
     const transport = provider(plan);
     expect(await evaluateOnce(run)).toMatchObject({
       state: 'completed',
-      requestsUsed: 11,
+      requestsUsed: 12,
     });
-    expect(transport).toHaveBeenCalledTimes(9);
+    expect(transport).toHaveBeenCalledTimes(10);
     expect(
       admin(
         `select count(*) from private.provider_requests where evaluation_run='${run}' and repair`,
@@ -294,12 +547,13 @@ describe('separately authorized release evaluation', () => {
     const transport = provider(plan);
     expect(await evaluateOnce(run)).toMatchObject({
       state: 'completed',
-      requestsUsed: 10,
-      costCents: 10,
+      requestsUsed: 11,
+      costCents: 11,
     });
-    expect(transport).toHaveBeenCalledTimes(10);
+    expect(transport).toHaveBeenCalledTimes(11);
     const result = report(run);
     expect(result).toMatchObject({
+      schemaVersion: 'evaluation-report-v3',
       identity: plan.identity,
       packageDigest: plan.packageDigest,
       datasetDigest: plan.datasetDigest,
@@ -313,8 +567,21 @@ describe('separately authorized release evaluation', () => {
       ),
     ).toBe(true);
     expect(
-      result.cases.find((c: { id: string }) => c.id === 'grade-ambiguous')
-        .output,
+      result.cases.find((c: { id: string }) => c.id === 'critic-spoiler')
+        .facetResults,
+    ).toMatchObject({
+      links: { matched: true },
+      privacy: { expected: 'public', observed: 'public', matched: true },
+      originality: {
+        expected: 'original',
+        observed: 'original',
+        matched: true,
+      },
+    });
+    expect(
+      result.cases.find(
+        (c: { id: string }) => c.id === 'grade-uncertain-context',
+      ).output,
     ).toMatchObject({ outcome: 'uncertain' });
     expect(
       result.cases.find((c: { id: string }) => c.id === 'policy-rights'),
@@ -332,7 +599,7 @@ describe('separately authorized release evaluation', () => {
       ),
     ).toBe(run);
     expect(await evaluateOnce(run)).toBeNull();
-    expect(transport).toHaveBeenCalledTimes(10);
+    expect(transport).toHaveBeenCalledTimes(11);
     const ids = (plan.package.manifest as { bundles: ContentBundle[] }).bundles
       .map((b) => `'${b.id}'`)
       .join(',');
@@ -399,7 +666,7 @@ describe('separately authorized release evaluation', () => {
             verdict: 'safe',
           })),
         };
-      if (id === 'grade-wrong' || id === 'grade-ambiguous')
+      if (id === 'grade-wrong' || id === 'grade-uncertain-context')
         return {
           assessment: {
             ...(
@@ -425,14 +692,20 @@ describe('separately authorized release evaluation', () => {
     const results = report(run).cases as { id: string; mismatches: string[] }[];
     const reasons = (id: string) =>
       results.find((c) => c.id === id)!.mismatches;
-    expect(reasons('source-unsupported')).toEqual(['ACCEPTANCE_REVERSAL']);
-    expect(reasons('critic-spoiler')).toEqual(['ACCEPTANCE_REVERSAL']);
+    expect(reasons('source-unsupported')).toEqual([
+      'ACCEPTANCE_REVERSAL',
+      'FACET_CLAIMS_MISMATCH',
+    ]);
+    expect(reasons('critic-spoiler')).toEqual([
+      'ACCEPTANCE_REVERSAL',
+      'FACET_LINKS_MISMATCH',
+    ]);
     expect(reasons('grade-wrong')).toEqual([
       'SCORE_RANGE',
       'PASS_FAIL_REVERSAL',
     ]);
-    expect(reasons('grade-borderline_pass')).toEqual(['PASS_FAIL_REVERSAL']);
-    expect(reasons('grade-ambiguous')).toEqual(['OUTCOME_REVERSAL']);
+    expect(reasons('grade-borderline_pass')).toEqual(['INVALID_OUTPUT']);
+    expect(reasons('grade-uncertain-context')).toEqual(['OUTCOME_REVERSAL']);
     expect(reasons('grade-partial')).toEqual(['INVALID_OUTPUT']);
     expect(
       report(run).cases.find((c: { id: string }) => c.id === 'grade-partial')
@@ -584,7 +857,7 @@ describe('separately authorized release evaluation', () => {
           null,
           'PROVIDER_TIMEOUT',
           0,
-          {},
+          { inputTokens: 0, outputTokens: 0 },
         ]);
         expect(
           admin(
@@ -598,7 +871,7 @@ describe('separately authorized release evaluation', () => {
     }
     const transport = provider(plan);
     await evaluateOnce(run);
-    expect(transport).toHaveBeenCalledTimes(9);
+    expect(transport).toHaveBeenCalledTimes(10);
     expect(
       report(run).cases.find((c: { id: string }) => c.id === 'source-supported')
         .mismatches,
@@ -771,16 +1044,18 @@ describe('separately authorized release evaluation', () => {
     const bundle = termBundle(`evaluation-shared-${randomUUID()}`);
     importBundles([bundle]);
     const config = {
-      policyVersion: 'content-policy-v1',
+      policyVersion: 'content-policy-v2',
       modelVersion: plan.configuration.modelVersion,
       promptVersion: plan.configuration.promptVersion,
       schemaVersion: plan.configuration.schemaVersion,
       fixtureVersion: plan.configuration.fixtureVersion,
       graderVersion: plan.configuration.graderVersion,
       gradingPromptVersion: plan.configuration.gradingPromptVersion,
+      reasoningEffort: 'low',
       gradingSchemaVersion: plan.configuration.gradingSchemaVersion,
       toolchainVersion: 'nonexecutable-tests-v1',
       modelEvaluationDigest: '1'.repeat(64),
+      modelEvaluationProtocolVersion: 'release-evaluation-v3',
       privacyApprovalDigest: '2'.repeat(64),
       deploymentApprovalDigest: '3'.repeat(64),
       providerConfigurationDigest: '4'.repeat(64),
@@ -811,6 +1086,7 @@ describe('separately authorized release evaluation', () => {
       modelVersion: config.modelVersion,
       promptVersion: config.promptVersion,
       schemaVersion: config.schemaVersion,
+      reasoningEffort: config.reasoningEffort,
     };
     expect(() =>
       admin(

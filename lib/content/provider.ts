@@ -11,11 +11,12 @@ export function structuredRequest(
 ) {
   return {
     model,
+    service_tier: 'default' as const,
     instructions: task.instructions,
     input: task.input,
     store: false as const,
     max_output_tokens: 3000,
-    reasoning: { effort: 'none' as const },
+    reasoning: { effort: 'low' as const },
     text: {
       format: {
         type: 'json_schema' as const,

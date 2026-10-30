@@ -15,8 +15,192 @@ import {
   manifestFor,
 } from '@/tests/fixtures/content';
 import { assertContentPolicy, assertLiveGrading } from '@/lib/server/env';
+import {
+  qualificationTask,
+  validateQualificationTask,
+} from '@/lib/content/qualification-contract';
+import { authoringSpec } from '@/tests/fixtures/authoring';
+import { modelOutput, syntheticPackage } from '@/tests/fixtures/evaluation';
 
 describe('offline manifest contract', () => {
+  it('requires exactly the supplied critic links, including an empty set', () => {
+    const input = syntheticPackage();
+    const clear = input.dataset.cases.find((c) => c.id === 'critic-clear')!;
+    const linked = input.dataset.cases.find((c) => c.id === 'critic-spoiler')!;
+    const finding = {
+      termId: (linked.candidate as ReturnType<typeof questionBundle>).payload
+        .terms[0].termId,
+      exposure: 'pre_attempt_safe',
+      verdict: 'safe',
+      reason: 'Synthetic contextual check.',
+    };
+    for (const entry of [clear, linked]) {
+      const work = {
+        ...entry,
+        candidate: entry.candidate as ReturnType<typeof questionBundle>,
+        artifacts: { fixtures: entry.fixtures },
+      };
+      const output = modelOutput(entry) as Record<string, unknown>;
+      const valid = entry === clear ? [] : [finding];
+      expect(() =>
+        validateQualificationTask(work, { ...output, links: valid }),
+      ).not.toThrow();
+      const invalid = [
+        [
+          ...valid,
+          { ...finding, termId: '20000000-0000-4000-8000-000000000001' },
+        ],
+        ...(entry === linked
+          ? [
+              [],
+              [finding, finding],
+              [{ ...finding, termId: '20000000-0000-4000-8000-000000000002' }],
+              [{ ...finding, exposure: 'post_grade_only' }],
+              [{ ...finding, verdict: 'spoiler_or_uncertain' }],
+            ]
+          : []),
+      ];
+      for (const links of invalid)
+        expect(() =>
+          validateQualificationTask(work, { ...output, links }),
+        ).toThrow('CHECK_FAILED');
+      for (const flags of [
+        { privacy: 'private_or_uncertain' },
+        { originality: 'reuse_or_uncertain' },
+        { objections: ['Unresolved factual issue.'] },
+      ])
+        expect(() =>
+          validateQualificationTask(work, {
+            ...output,
+            links: valid,
+            ...flags,
+          }),
+        ).toThrow('CHECK_FAILED');
+    }
+  });
+  it('shares neutral anchors without assigning grader-only duties to other roles', () => {
+    const candidate = questionBundle('synthetic-role-boundaries');
+    for (const stage of ['source', 'fixtures', 'critic']) {
+      const task = qualificationTask(
+        { stage, candidate, evidence: [], dependencies: [], artifacts: {} },
+        false,
+      );
+      expect(task.instructions).not.toContain('Grade only');
+      expect(task.instructions).not.toContain('Return uncertain');
+      expect(task.instructions).not.toContain('Explain evidence and missing');
+      expect(task.instructions).toContain('One of two');
+      expect(task.instructions).toContain('every component');
+    }
+  });
+  it('keeps verbatim membership distinct from semantic support, privacy and reproduction rights', () => {
+    const candidate = questionBundle('synthetic-grounding');
+    const spec = authoringSpec(candidate);
+    const work = {
+      candidate,
+      evidence: spec.evidence,
+      stage: 'source',
+      dependencies: [],
+      artifacts: {},
+    };
+    const output = {
+      independentAnswer: 'Synthetic independent assessment.',
+      claims: candidate.claims.map((c) => ({
+        claim: c.claim,
+        sourceId: c.sourceIds[0],
+        quote: c.claim,
+        verdict: 'supported',
+        reason: 'The synthetic source states the mapped claim.',
+      })),
+      privacy: 'public',
+      originality: 'original',
+      issues: [],
+      executionRequired: false,
+      executionPlan: [],
+    };
+    expect(() => validateQualificationTask(work, output)).not.toThrow();
+    for (const quote of [
+      'synthetic fixture claim.',
+      'Synthetic  fixture claim.',
+      'Synthetic fixture…',
+    ])
+      expect(() =>
+        validateQualificationTask(work, {
+          ...output,
+          claims: [{ ...output.claims[0], quote }],
+        }),
+      ).toThrow('CHECK_FAILED');
+    for (const finding of [
+      { privacy: 'private_or_uncertain' },
+      { originality: 'reuse_or_uncertain' },
+      {
+        claims: [
+          {
+            ...output.claims[0],
+            verdict: 'unsupported',
+            reason: 'The exact substring does not support this assertion.',
+          },
+        ],
+      },
+    ])
+      expect(() =>
+        validateQualificationTask(work, { ...output, ...finding }),
+      ).toThrow('CHECK_FAILED');
+    expect(qualificationTask(work, false).instructions).toContain(
+      'Substring membership is not factual support',
+    );
+    const critic = qualificationTask({ ...work, stage: 'critic' }, false);
+    expect(critic.instructions).toContain(
+      'do not reject a wrong-answer fixture merely because the answer is false',
+    );
+    expect(critic.input).not.toContain(output.independentAnswer);
+  });
+  it('rejects null, reversed, threshold-crossing and mislabeled scored fixture expectations', () => {
+    const candidate = questionBundle('synthetic-fixtures');
+    const spec = authoringSpec(candidate);
+    const work = {
+      candidate,
+      evidence: spec.evidence,
+      stage: 'fixtures',
+      dependencies: [],
+      artifacts: {},
+    };
+    const cases = [
+      'wrong',
+      'partial',
+      'borderline_pass',
+      'strong',
+      'non_answer',
+    ].map((kind, i) => ({
+      kind,
+      answer: `Synthetic ${kind}`,
+      expected: 'scored',
+      minScore: [0, 1, 4, 4, 0][i],
+      maxScore: [0, 2, 4, 5, 0][i],
+      expectedPass: i === 2 || i === 3,
+      reason: 'Frozen synthetic expectation.',
+      basis: [
+        {
+          claim: candidate.claims[0].claim,
+          sourceId: spec.evidence[0].sourceId,
+          quote: spec.evidence[0].text,
+        },
+      ],
+    }));
+    expect(() => validateQualificationTask(work, { cases })).not.toThrow();
+    for (const change of [
+      { minScore: null },
+      { minScore: 5, maxScore: 4 },
+      { minScore: 3 },
+      { expectedPass: false },
+      { expected: 'uncertain' },
+    ]) {
+      const altered = structuredClone(cases);
+      Object.assign(altered[2], change);
+      expect(() =>
+        validateQualificationTask(work, { cases: altered }),
+      ).toThrow();
+    }
+  });
   it('validates metadata-only discovery separately from correctness evidence', () => {
     const bundle = questionBundle('source-roles');
     bundle.sources.push({

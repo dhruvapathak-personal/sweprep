@@ -45,7 +45,7 @@ export function installEvidence(
 ) {
   const id = randomUUID();
   sql(`insert into private.qualification_runs(id,candidate_id,candidate_digest,policy_version,evidence,evidence_digest,decision)
-    values('${id}','${bundle.id}','${bundle.digest}','content-policy-v1',${literal(evidence)},'${contentDigest(evidence)}','qualified');`);
+    values('${id}','${bundle.id}','${bundle.digest}','content-policy-v2',${literal(evidence)},'${contentDigest(evidence)}','qualified');`);
   return id;
 }
 export function release(bundle: ContentBundle, qualificationId: string) {

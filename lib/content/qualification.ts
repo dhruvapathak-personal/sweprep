@@ -279,6 +279,7 @@ export async function qualifyOnce(jobId: string | null = null) {
           modelVersion: work.configuration.modelVersion,
           promptVersion: work.configuration.promptVersion,
           schemaVersion: work.configuration.schemaVersion,
+          reasoningEffort: work.configuration.reasoningEffort,
         },
       ]);
     } catch (e) {

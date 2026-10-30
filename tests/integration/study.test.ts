@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
@@ -27,7 +28,7 @@ const question = '40000000-0000-4000-8000-000000000001';
 const device = randomUUID();
 const scored = {
   outcome: 'scored',
-  score: 3,
+  score: 4,
   criticalClaimsMet: true,
   correctClaims: ['Lifetime ends.'],
   missingClaims: [],
@@ -153,6 +154,42 @@ beforeAll(async () => {
 });
 
 describe('real authenticated database', { concurrent: false }, () => {
+  it('invalidates active grading leases on upgrade without changing attempts or reservations', async () => {
+    const attempt = await submit();
+    const work = await claim();
+    expect(work.job.attempt_id).toBe(attempt.id);
+    const upgrade = readFileSync(
+      'supabase/migrations/202610300010_evaluation_v3.sql',
+      'utf8',
+    ).replaceAll('create function', 'create or replace function');
+    expect(
+      sql(`
+        begin;
+        create temporary table prior_grading as select
+          (select to_jsonb(a) from public.attempts a where id='${attempt.id}') as attempt,
+          (select coalesce(jsonb_agg(to_jsonb(r) order by id),'[]') from private.provider_requests r) as requests;
+        ${upgrade}
+        do $test$
+        begin
+          if not exists(select 1 from public.grading_jobs where attempt_id='${attempt.id}'
+            and state='failed' and error_code='GRADING_REVISION_REQUIRED'
+            and lease_token is null and lease_until is null) then raise exception 'LEASE_NOT_INVALIDATED'; end if;
+          begin
+            perform public.finalize_grade('${attempt.id}',${work.job.generation},
+              '${work.job.lease_token}','${JSON.stringify(scored)}',true,'fixture-no-network');
+            raise exception 'LATE_COMPLETION_ACCEPTED';
+          exception when others then if sqlerrm<>'STALE_LEASE' then raise; end if; end;
+          if exists(select 1 from prior_grading p where
+            p.attempt is distinct from (select to_jsonb(a) from public.attempts a where id='${attempt.id}')
+            or p.requests is distinct from (select coalesce(jsonb_agg(to_jsonb(r) order by id),'[]') from private.provider_requests r))
+            then raise exception 'HISTORICAL_EVIDENCE_CHANGED'; end if;
+        end;
+        $test$;
+        rollback;
+      `),
+    ).not.toContain('ERROR');
+    expect((await finish(work, scored, true)).error).toBeNull();
+  });
   it('connects SQL to the validated loopback address despite inherited libpq settings', () => {
     const connection = execFileSync('psql', ['-X', '-w', '-c', '\\conninfo'], {
       encoding: 'utf8',
@@ -573,8 +610,10 @@ describe('real authenticated database', { concurrent: false }, () => {
     expect(attempt.error).toBeNull();
     for (const [name, value] of Object.entries({
       GRADING_MODE: 'live',
-      CONTENT_POLICY_VERSION: 'content-policy-v1',
+      CONTENT_POLICY_VERSION: 'content-policy-v2',
       MODEL_EVAL_APPROVED: 'true',
+      MODEL_EVAL_PROTOCOL_VERSION: 'release-evaluation-v3',
+      MODEL_EVAL_RELEASE_DIGEST: '1'.repeat(64),
       PROVIDER_DATA_POLICY_APPROVED: 'true',
       DEPLOYMENT_RECOVERY_APPROVED: 'true',
       AI_DAILY_CAP_CENTS: '100',
@@ -659,7 +698,7 @@ describe('real authenticated database', { concurrent: false }, () => {
     const { id } = await submit();
     const first = await finish(await claim(), {
       ...scored,
-      score: 5,
+      score: 2,
       criticalClaimsMet: false,
     });
     expect(first.error).toBeNull();
@@ -685,7 +724,13 @@ describe('real authenticated database', { concurrent: false }, () => {
     ).toEqual([]);
     expect((await a.rpc('retry_grade', { p_attempt: id })).data).toBe(4);
     expect(
-      (await finish(await claim(), { ...scored, score: 1 })).error,
+      (
+        await finish(await claim(), {
+          ...scored,
+          score: 1,
+          criticalClaimsMet: false,
+        })
+      ).error,
     ).toBeNull();
     expect(
       (await a.from('review_episodes').select().eq('user_id', uid)).data,
@@ -849,7 +894,11 @@ describe('real authenticated database', { concurrent: false }, () => {
             job,
             event.outcome === 'unscored'
               ? { outcome: 'uncertain', reason: 'Synthetic uncertainty.' }
-              : { ...scored, score: event.outcome === 'failed' ? 1 : 3 },
+              : {
+                  ...scored,
+                  score: event.outcome === 'failed' ? 1 : 4,
+                  criticalClaimsMet: event.outcome !== 'failed',
+                },
           )
         ).error,
       ).toBeNull();

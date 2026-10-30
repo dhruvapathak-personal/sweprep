@@ -73,7 +73,7 @@ const contentAdmin = spawnSync(
     '-v',
     'ON_ERROR_STOP=1',
     '-c',
-    'grant content_importer, content_publisher, qualification_operator, qualification_worker, evaluation_operator, evaluation_worker to postgres',
+    'grant content_importer, content_publisher, qualification_operator, qualification_worker, evaluation_operator, evaluation_worker, authoring_operator, authoring_worker to postgres',
   ],
   { encoding: 'utf8', env: sqlEnv },
 );
@@ -101,7 +101,7 @@ const server = spawn(
       RECOVERY_SECRET: recoverySecret,
       APP_URL: baseUrl,
       GRADING_MODE: 'simulated',
-      CONTENT_POLICY_VERSION: 'content-policy-v1',
+      CONTENT_POLICY_VERSION: 'content-policy-v2',
       ALLOW_LOCAL_SIMULATION: 'true',
     },
   },

@@ -15,6 +15,9 @@ import {
   qualificationIntake,
   qualificationTask,
   sourceSnapshot,
+  calibrationIssues,
+  sourceReview,
+  criticReview,
 } from './qualification-contract.ts';
 import { gradingTask } from '../contracts/grading.ts';
 import { structuredRequest } from './provider.ts';
@@ -37,14 +40,15 @@ const policyCode = z.enum([
 ]);
 export const evaluationConfiguration = z
   .object({
-    protocolVersion: z.literal('release-evaluation-v1'),
-    policyVersion: z.literal('content-policy-v1'),
+    protocolVersion: z.literal('release-evaluation-v3'),
+    policyVersion: z.literal('content-policy-v2'),
     modelVersion: z.literal('gpt-5.4-mini-2026-03-17'),
-    promptVersion: z.literal('qualification-prompts-v1'),
-    schemaVersion: z.literal('qualification-schema-v1'),
-    fixtureVersion: z.literal('machine-fixtures-v1'),
-    graderVersion: z.literal('grader-v1'),
-    gradingPromptVersion: z.literal('grade-prompt-v1'),
+    promptVersion: z.literal('qualification-prompts-v3'),
+    schemaVersion: z.literal('qualification-schema-v3'),
+    fixtureVersion: z.literal('machine-fixtures-v2'),
+    graderVersion: z.literal('grader-v3'),
+    gradingPromptVersion: z.literal('grade-prompt-v3'),
+    reasoningEffort: z.literal('low'),
     gradingSchemaVersion: z.literal('grade-schema-v1'),
     toolchainVersion: z.literal('conceptual-no-execution-v1'),
     inputUsdPerMillion: z.literal(0.75),
@@ -52,7 +56,7 @@ export const evaluationConfiguration = z
     requestCents: z.literal(10),
     codeDigest: digest,
     mode: z.enum(['live', 'mock']),
-    dailyCap: z.number().int().min(0).max(100),
+    dailyCap: z.number().int().min(0).max(1000),
     monthlyCap: z.number().int().min(0).max(2000),
     batchCap: z.number().int().min(0).max(2000),
     maxRequests: z.number().int().min(1).max(180),
@@ -72,7 +76,8 @@ const gradeExpectation = z
       'partial',
       'borderline_pass',
       'strong',
-      'ambiguous',
+      'non_answer',
+      'uncertain_context',
     ]),
     outcome: z.enum(['scored', 'uncertain']),
     minScore: z.number().int().min(0).max(5).nullable(),
@@ -93,6 +98,39 @@ const evaluationCase = z
       .object({
         policy: z.array(policyCode).max(10),
         accepted: z.boolean().nullable(),
+        facets: z
+          .object({
+            privacy: sourceReview.shape.privacy,
+            originality: sourceReview.shape.originality,
+            claims: z
+              .array(
+                sourceReview.shape.claims.element.pick({
+                  claim: true,
+                  sourceId: true,
+                  verdict: true,
+                }),
+              )
+              .max(30),
+            fixtures: z
+              .array(
+                criticReview.shape.fixtures.element.pick({
+                  kind: true,
+                  verdict: true,
+                }),
+              )
+              .max(5),
+            links: z
+              .array(
+                criticReview.shape.links.element.pick({
+                  termId: true,
+                  exposure: true,
+                  verdict: true,
+                }),
+              )
+              .max(20),
+          })
+          .strict()
+          .nullable(),
         grade: gradeExpectation.nullable(),
         basis: z
           .array(
@@ -120,7 +158,7 @@ const datasetSchema = z
   .strict();
 const packageSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     id,
     manifest: z.unknown(),
     intakes: z
@@ -151,6 +189,8 @@ const packageSchema = z
 export type EvaluationPackage = z.infer<typeof packageSchema>;
 
 const codePaths = [
+  'lib/content/authoring-contract.ts',
+  'lib/content/authoring.ts',
   'lib/content/evaluation-contract.ts',
   'lib/content/model-evaluation.ts',
   'lib/content/qualification-contract.ts',
@@ -161,7 +201,12 @@ const codePaths = [
   'lib/contracts/study.ts',
   'lib/contracts/content.ts',
   'lib/server/ai/grader.ts',
+  'lib/server/env.ts',
   'scripts/content-evaluate.ts',
+  'scripts/content-author.ts',
+  'supabase/migrations/202610300008_calibration_v2.sql',
+  'supabase/migrations/202610300009_conceptual_authoring.sql',
+  'supabase/migrations/202610300010_evaluation_v3.sql',
   'supabase/migrations/202610290006_qualification.sql',
   'supabase/migrations/202610290007_model_evaluation.sql',
   'package-lock.json',
@@ -280,6 +325,53 @@ function compileCase(entry: EvaluationCase) {
     entry.dependencies,
   );
   const expected = entry.expected;
+  const facets = expected.facets;
+  if (entry.stage === 'source' || entry.stage === 'critic') {
+    const candidate = bundleSchema.parse(entry.candidate);
+    if (!facets) throw new Error('CASE_FACETS_INVALID');
+    const links = candidate.kind === 'question' ? candidate.payload.terms : [];
+    const fixtures =
+      candidate.kind === 'question' ? (entry.fixtures?.cases ?? []) : [];
+    const complete =
+      entry.stage === 'source'
+        ? !facets.fixtures.length &&
+          !facets.links.length &&
+          facets.claims.length === candidate.claims.length &&
+          new Set(facets.claims.map((c) => c.claim)).size ===
+            facets.claims.length &&
+          facets.claims.every((f) =>
+            candidate.claims.some(
+              (c) => c.claim === f.claim && c.sourceIds.includes(f.sourceId),
+            ),
+          )
+        : !facets.claims.length &&
+          facets.fixtures.length === fixtures.length &&
+          new Set(facets.fixtures.map((f) => f.kind)).size ===
+            facets.fixtures.length &&
+          facets.fixtures.every((f) =>
+            fixtures.some((c) => c.kind === f.kind),
+          ) &&
+          facets.links.length === links.length &&
+          new Set(facets.links.map((l) => l.termId)).size ===
+            facets.links.length &&
+          facets.links.every((l) =>
+            links.some(
+              (c) => c.termId === l.termId && c.exposure === l.exposure,
+            ),
+          );
+    const safe =
+      facets.privacy === 'public' &&
+      facets.originality === 'original' &&
+      facets.claims.every((c) => c.verdict === 'supported') &&
+      facets.fixtures.every((f) => f.verdict === 'supported') &&
+      facets.links.every(
+        (l) =>
+          l.verdict ===
+          (l.exposure === 'pre_attempt_safe' ? 'safe' : 'post_grade_only'),
+      );
+    if (!complete || safe !== expected.accepted)
+      throw new Error('CASE_FACETS_INVALID');
+  } else if (facets !== null) throw new Error('CASE_FACETS_INVALID');
   if (entry.stage === 'policy') {
     if (
       !expected.policy.length ||
@@ -303,6 +395,8 @@ function compileCase(entry: EvaluationCase) {
   )
     throw new Error('CASE_EVIDENCE_INVALID');
   const candidate = bundleSchema.parse(entry.candidate);
+  if (calibrationIssues(candidate).length)
+    throw new Error('CANDIDATE_INPUT_INVALID');
   const build = (repair: boolean) => {
     if (entry.stage === 'grade') {
       if (
@@ -314,7 +408,7 @@ function compileCase(entry: EvaluationCase) {
         throw new Error('CASE_EXPECTATION_INVALID');
       const g = expected.grade;
       if (
-        g.kind === 'ambiguous'
+        g.kind === 'uncertain_context'
           ? g.outcome !== 'uncertain' ||
             g.minScore !== null ||
             g.maxScore !== null ||
@@ -323,7 +417,7 @@ function compileCase(entry: EvaluationCase) {
             g.minScore === null ||
             g.maxScore === null ||
             g.minScore > g.maxScore ||
-            g.pass !== !['wrong', 'partial'].includes(g.kind) ||
+            g.pass !== !['wrong', 'partial', 'non_answer'].includes(g.kind) ||
             (g.pass
               ? g.minScore < candidate.payload.rubric.passScore
               : g.maxScore >= candidate.payload.rubric.passScore)
@@ -409,7 +503,8 @@ export function compileEvaluation(raw: unknown, rawConfiguration: unknown) {
           candidate.dependencies
             .map((d) => manifest.bundles.find((b) => b.id === d.id)!)
             .filter(Boolean),
-        ).length > 0
+        ).length > 0 ||
+        calibrationIssues(candidate).length > 0
       );
     })
   )
@@ -435,9 +530,14 @@ export function compileEvaluation(raw: unknown, rawConfiguration: unknown) {
     !['source', 'fixtures', 'critic', 'grade', 'policy'].every((stage) =>
       cases.some((c) => c.stage === stage),
     ) ||
-    !['wrong', 'partial', 'borderline_pass', 'strong', 'ambiguous'].every(
-      (kind) => cases.some((c) => c.expected.grade?.kind === kind),
-    ) ||
+    ![
+      'wrong',
+      'partial',
+      'borderline_pass',
+      'strong',
+      'non_answer',
+      'uncertain_context',
+    ].every((kind) => cases.some((c) => c.expected.grade?.kind === kind)) ||
     !cases.some((c) => c.stage === 'source' && c.expected.accepted === false) ||
     !cases.some((c) => c.stage === 'critic' && c.expected.accepted === false) ||
     !cases.some((c) => c.expected.policy.includes('REUSE_RIGHTS_REQUIRED'))
@@ -476,6 +576,7 @@ export function validateEvaluationPlan(raw: EvaluationPlan) {
 export function offlineEvaluation(raw: unknown, configuration: unknown) {
   const plan = compileEvaluation(raw, configuration);
   return {
+    schemaVersion: 'evaluation-report-v3',
     identity: plan.identity,
     packageDigest: plan.packageDigest,
     datasetDigest: plan.datasetDigest,

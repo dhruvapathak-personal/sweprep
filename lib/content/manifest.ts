@@ -34,7 +34,7 @@ function jsonbTextBytes(value: unknown): number {
   }
   return Buffer.byteLength(JSON.stringify(value));
 }
-const sourceSchema = z
+export const sourceSchema = z
   .object({
     id: identity,
     role: z.enum(['discovery_context', 'correctness_evidence']),

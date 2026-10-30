@@ -1,6 +1,6 @@
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contentDigest, type ContentBundle } from '@/lib/content/manifest';
 import { qualificationSql, qualifyOnce } from '@/lib/content/qualification';
 import { gradingInstructions } from '@/lib/contracts/grading';
+import { calibrationIssues } from '@/lib/content/qualification-contract';
 import { questionBundle, termBundle } from '@/tests/fixtures/content';
+import { authorOnce, authoringSql } from '@/lib/content/authoring';
+import { compileAuthoring } from '@/lib/content/authoring-contract';
+import { authoringSpec } from '@/tests/fixtures/authoring';
 import {
   importBundles,
   literal,
@@ -18,18 +22,20 @@ import {
   testUser,
 } from './helpers';
 
-const kinds = ['wrong', 'partial', 'borderline_pass', 'strong', 'ambiguous'];
+const kinds = ['wrong', 'partial', 'borderline_pass', 'strong', 'non_answer'];
 const configuration = (overrides: Record<string, unknown> = {}) => ({
-  policyVersion: 'content-policy-v1',
+  policyVersion: 'content-policy-v2',
   modelVersion: 'gpt-5.4-mini-2026-03-17',
-  promptVersion: 'qualification-prompts-v1',
-  schemaVersion: 'qualification-schema-v1',
-  fixtureVersion: 'machine-fixtures-v1',
-  graderVersion: 'grader-v1',
-  gradingPromptVersion: 'grade-prompt-v1',
+  promptVersion: 'qualification-prompts-v3',
+  schemaVersion: 'qualification-schema-v3',
+  fixtureVersion: 'machine-fixtures-v2',
+  graderVersion: 'grader-v3',
+  gradingPromptVersion: 'grade-prompt-v3',
+  reasoningEffort: 'low',
   gradingSchemaVersion: 'grade-schema-v1',
   toolchainVersion: 'nonexecutable-tests-v1',
   modelEvaluationDigest: '1'.repeat(64),
+  modelEvaluationProtocolVersion: 'release-evaluation-v3',
   privacyApprovalDigest: '2'.repeat(64),
   deploymentApprovalDigest: '3'.repeat(64),
   providerConfigurationDigest: '4'.repeat(64),
@@ -138,28 +144,10 @@ function outputs(bundle: ContentBundle) {
       cases: kinds.map((kind, index) => ({
         kind,
         answer: `Synthetic answer ${kind}`,
-        expected: kind === 'ambiguous' ? 'uncertain' : 'scored',
-        minScore:
-          kind === 'ambiguous'
-            ? null
-            : index === 0
-              ? 0
-              : index === 1
-                ? 1
-                : index === 2
-                  ? 3
-                  : 4,
-        maxScore:
-          kind === 'ambiguous'
-            ? null
-            : index === 0
-              ? 0
-              : index === 1
-                ? 2
-                : index === 2
-                  ? 3
-                  : 5,
-        expectedPass: kind === 'ambiguous' ? null : index >= 2,
+        expected: 'scored',
+        minScore: [0, 1, 4, 4, 0][index],
+        maxScore: [0, 2, 4, 5, 0][index],
+        expectedPass: index === 2 || index === 3,
         reason:
           'The synthetic source and critical claim distinguish this answer.',
         basis,
@@ -225,6 +213,8 @@ function provider(
     const sent = JSON.parse(String(init?.body));
     expect(sent.model).toBe('gpt-5.4-mini-2026-03-17');
     expect(sent.store).toBe(false);
+    expect(sent.service_tier).toBe('default');
+    expect(sent.reasoning).toEqual({ effort: 'low' });
     expect(sent.tools).toBeUndefined();
     expect(sent.max_output_tokens).toBe(3000);
     expect(sent.text.format.strict).toBe(true);
@@ -260,29 +250,23 @@ function provider(
       ]);
       const kind = stage.replace('evaluate_', '');
       value = {
-        assessment:
-          kind === 'ambiguous'
-            ? {
-                outcome: 'uncertain',
-                reason: 'The synthetic answer is ambiguous.',
-              }
-            : {
-                outcome: 'scored',
-                score:
-                  kind === 'wrong'
-                    ? 0
-                    : kind === 'partial'
-                      ? 2
-                      : kind === 'borderline_pass'
-                        ? 3
-                        : 5,
-                criticalClaimsMet: !['wrong', 'partial'].includes(kind),
-                correctClaims: ['Synthetic claim.'],
-                missingClaims: [],
-                incorrectClaims: [],
-                idealAnswer: 'Synthetic ideal answer.',
-                explanation: 'Synthetic grading consistency only.',
-              },
+        assessment: {
+          outcome: 'scored',
+          score:
+            kind === 'wrong' || kind === 'non_answer'
+              ? 0
+              : kind === 'partial'
+                ? 2
+                : kind === 'borderline_pass'
+                  ? 4
+                  : 5,
+          criticalClaimsMet: !['wrong', 'partial', 'non_answer'].includes(kind),
+          correctClaims: ['Synthetic claim.'],
+          missingClaims: [],
+          incorrectClaims: [],
+          idealAnswer: 'Synthetic ideal answer.',
+          explanation: 'Synthetic grading consistency only.',
+        },
       };
     }
     return response(
@@ -300,6 +284,7 @@ const prompt = (config: Configuration) => ({
   modelVersion: config.modelVersion,
   promptVersion: config.promptVersion,
   schemaVersion: config.schemaVersion,
+  reasoningEffort: config.reasoningEffort,
 });
 
 beforeEach(() => {
@@ -321,7 +306,626 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function openAuthor(
+  bundle = candidate(),
+  overrides: Record<string, unknown> = {},
+  revisionOf: string | null = null,
+  dependencies: ContentBundle[] = [],
+) {
+  const config = configuration({
+    toolchainVersion: 'conceptual-no-execution-v1',
+    ...overrides,
+  });
+  const batch = admin(
+    `set role qualification_operator; select private.qualification_open_batch(${literal(config)})`,
+  );
+  const spec = { ...authoringSpec(bundle, batch), revisionOf, dependencies };
+  const plan = compileAuthoring(spec);
+  const id = admin(
+    `set role authoring_operator; select private.authoring_open(${literal(plan)})`,
+  );
+  enable(config);
+  vi.stubEnv('AUTHORING_ENABLED', 'true');
+  vi.stubEnv(
+    'AUTHORING_RUN_AUTHORIZATION_DIGEST',
+    spec.authorization.runAuthorizationDigest,
+  );
+  vi.stubEnv('PGOPTIONS', '-c role=authoring_worker');
+  return { id, spec, plan, batch, config, bundle };
+}
+function authorTransport(work: ReturnType<typeof openAuthor>, invalid = false) {
+  const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    expect(
+      admin(
+        `select count(*) from private.provider_requests where authoring_run='${work.id}'`,
+      ),
+    ).toBe(String(transport.mock.calls.length));
+    const sent = JSON.parse(String(init?.body));
+    expect(sent.service_tier).toBe('default');
+    expect(sent).toEqual(
+      transport.mock.calls.length === 1
+        ? work.plan.requests.original
+        : work.plan.requests.repair,
+    );
+    return response(
+      invalid
+        ? { malformed: true }
+        : { payload: work.bundle.payload, claims: work.bundle.claims },
+    );
+  });
+  vi.stubGlobal('fetch', transport);
+  return transport;
+}
+function authorExport(id: string) {
+  return JSON.parse(
+    admin(
+      `set role authoring_operator; select private.authoring_export('${id}')`,
+    ),
+  );
+}
+function handoff(work: ReturnType<typeof openAuthor>) {
+  const bundle = authorExport(work.id).work.bundle as ContentBundle;
+  importBundles([bundle]);
+  const job = admin(
+    `set role qualification_operator; select private.qualification_enqueue('${bundle.id}','${work.batch}',${literal(work.spec.evidence)})`,
+  );
+  vi.stubEnv('PGOPTIONS', '-c role=qualification_worker');
+  return { bundle, job };
+}
+
+describe('bounded conceptual authoring handoff', () => {
+  it('blocks unfinished prior-version work without changing its inputs or reserved ledger rows', () => {
+    const bundle = candidate('term');
+    importBundles([bundle]);
+    const config = Object.fromEntries(
+      Object.entries(
+        configuration({
+          toolchainVersion: 'conceptual-no-execution-v1',
+        }),
+      )
+        .filter(([key]) => key !== 'reasoningEffort')
+        .map(([key, value]) => [
+          key,
+          typeof value === 'string' ? value.replace(/-v3$/, '-v2') : value,
+        ]),
+    );
+    const plan = compileAuthoring(authoringSpec(candidate('term')));
+    const legacyPlan = structuredClone(plan) as Record<string, unknown>;
+    (legacyPlan.spec as typeof plan.spec).authorization.promptVersion =
+      'conceptual-authoring-prompts-v1' as typeof plan.spec.authorization.promptVersion;
+    const old = [
+      [
+        '202610300008_calibration_v2.sql',
+        [
+          'qualification_open_batch',
+          'qualification_precheck',
+          'qualification_reserve_cost',
+        ],
+      ],
+      [
+        '202610300009_conceptual_authoring.sql',
+        ['qualification_enqueue', 'authoring_open'],
+      ],
+    ] as const;
+    const entryPoints = old
+      .flatMap(([file, names]) => {
+        const source = readFileSync(`supabase/migrations/${file}`, 'utf8');
+        return names.map((name) =>
+          source
+            .match(
+              new RegExp(
+                `create (?:or replace )?function private\\.${name}\\([\\s\\S]*?\\n\\$\\$;`,
+              ),
+            )![0]
+            .replace('create function', 'create or replace function'),
+        );
+      })
+      .join('\n');
+    const upgrade = readFileSync(
+      'supabase/migrations/202610300010_evaluation_v3.sql',
+      'utf8',
+    ).replaceAll('create function', 'create or replace function');
+    expect(
+      admin(`
+      begin;
+      grant qualification_engine,authoring_engine to postgres;
+      ${entryPoints}
+      set role qualification_operator;
+      select private.qualification_open_batch(${literal(config)}) as batch \\gset
+      select private.qualification_enqueue('${bundle.id}',:'batch',${literal(snapshots(bundle))}) as job \\gset
+      set role qualification_worker;
+      select private.qualification_claim(:'job')->>'lease' as qlease \\gset
+      select private.qualification_reserve_cost(:'job',:'qlease','source',false,${literal(prompt(config as Configuration))}) as qrequest \\gset
+      set role authoring_operator;
+      select private.authoring_open(jsonb_set(${literal(legacyPlan)},'{spec,batchId}',to_jsonb(:'batch'::text))) as arun \\gset
+      set role authoring_worker;
+      select private.authoring_claim(:'arun')->>'lease' as alease \\gset
+      set role postgres;
+      select set_config('test.qjob',:'job',true),set_config('test.qlease',:'qlease',true),
+        set_config('test.qrequest',:'qrequest',true),set_config('test.arun',:'arun',true),set_config('test.alease',:'alease',true);
+      create temporary table prior_work as select
+        (select to_jsonb(i) from private.qualification_inputs i where id=:'job') as qualification,
+        (select to_jsonb(i) from private.authoring_inputs i where id=:'arun') as authoring,
+        (select to_jsonb(r) from private.provider_requests r where id=:'qrequest') as request;
+      ${upgrade}
+      set role qualification_worker;
+      do $test$
+      declare job uuid:=current_setting('test.qjob')::uuid; lease uuid:=current_setting('test.qlease')::uuid;
+      begin
+        if private.qualification_claim(job) is not null then raise exception 'LEGACY_RECLAIMED'; end if;
+        begin
+          perform private.qualification_complete(job,lease,'source',current_setting('test.qrequest')::uuid,null,'PROVIDER_REJECTED',null,null);
+          raise exception 'LATE_COMPLETION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','QUALIFICATION_DISABLED') then raise; end if; end;
+        begin
+          perform private.qualification_reserve_cost(job,lease,'source',false,'{}');
+          raise exception 'LATE_RESERVATION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','QUALIFICATION_DISABLED') then raise; end if; end;
+      end;
+      $test$;
+      set role authoring_worker;
+      do $test$
+      declare run uuid:=current_setting('test.arun')::uuid; lease uuid:=current_setting('test.alease')::uuid;
+      begin
+        if private.authoring_claim(run) is not null then raise exception 'LEGACY_RECLAIMED'; end if;
+        begin
+          perform private.authoring_reserve(run,lease,false);
+          raise exception 'LATE_RESERVATION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','AUTHORING_DISABLED') then raise; end if; end;
+        begin
+          perform private.authoring_complete(run,lease,gen_random_uuid(),null,'PROVIDER_REJECTED',null,null);
+          raise exception 'LATE_COMPLETION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','AUTHORING_DISABLED') then raise; end if; end;
+      end;
+      $test$;
+      set role postgres;
+      do $test$
+      begin
+        if exists(select 1 from prior_work p where
+          p.qualification is distinct from (select to_jsonb(i) from private.qualification_inputs i where id=current_setting('test.qjob')::uuid)
+          or p.authoring is distinct from (select to_jsonb(i) from private.authoring_inputs i where id=current_setting('test.arun')::uuid)
+          or p.request is distinct from (select to_jsonb(r) from private.provider_requests r where id=current_setting('test.qrequest')::uuid))
+          then raise exception 'HISTORICAL_EVIDENCE_CHANGED'; end if;
+      end;
+      $test$;
+      rollback;
+    `),
+    ).not.toContain('ERROR');
+  });
+  it('persists requests before SDK dispatch, imports privately, and derives a combined independent qualification receipt', async () => {
+    const work = openAuthor();
+    const transport = authorTransport(work);
+    expect(await authorOnce(work.id)).toMatchObject({
+      state: 'authored',
+      requestsUsed: 1,
+    });
+    expect(await authorOnce(work.id)).toBeNull();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      admin(
+        `select count(*) from private.content_candidates where id='${authorExport(work.id).work.candidateId}'`,
+      ),
+    ).toBe('0');
+    expect(
+      admin(
+        `set role authoring_operator; select private.authoring_open(${literal(work.plan)})`,
+      ),
+    ).toBe(work.id);
+    const path = join(
+      mkdtempSync(join(tmpdir(), 'authoring-export-')),
+      'private.json',
+    );
+    const exported = execFileSync(
+      process.execPath,
+      ['scripts/content-author.ts', 'export', work.id, path],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PGOPTIONS: '-c role=authoring_operator' },
+      },
+    );
+    expect(JSON.parse(exported)).toEqual({
+      exported: true,
+      imported: false,
+      qualified: false,
+      published: false,
+    });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const archive = JSON.parse(readFileSync(path, 'utf8'));
+    expect(archive.authoring.requests).toHaveLength(1);
+    expect(archive.authoring.artifacts).toHaveLength(1);
+    expect(archive.manifest.bundles[0]).toEqual(
+      authorExport(work.id).work.bundle,
+    );
+    expect(archive.intake.batchId).toBe(work.batch);
+    expect(
+      spawnSync(
+        process.execPath,
+        ['scripts/content-author.ts', 'export', work.id, path],
+        { env: { ...process.env, PGOPTIONS: '-c role=authoring_operator' } },
+      ).status,
+    ).toBe(1);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(archive);
+    const { bundle, job } = handoff(work);
+    const qualifier = provider(bundle);
+    expect(await qualifyOnce(job)).toMatchObject({
+      state: 'qualified',
+      requestsUsed: 8,
+    });
+    expect(qualifier).toHaveBeenCalledTimes(8);
+    const receipt = JSON.parse(
+      admin(
+        `select evidence from private.qualification_runs where candidate_id='${bundle.id}'`,
+      ),
+    );
+    expect(receipt.requestsUsed).toBe(9);
+    expect(receipt.lineageRequestsUsed).toBe(9);
+    expect(
+      admin(
+        `select count(*) from private.current_content where candidate_id='${bundle.id}'`,
+      ),
+    ).toBe('0');
+    expect(
+      admin(
+        `select count(*) from public.question_versions where id='${bundle.id}'`,
+      ),
+    ).toBe('0');
+    expect(() =>
+      admin(
+        `update private.authoring_inputs set plan='{}' where id='${work.id}'`,
+      ),
+    ).toThrow(/IMMUTABLE_HISTORY/);
+    const relabeled = compileAuthoring({
+      ...work.spec,
+      id: randomUUID(),
+      stableId: `renamed-${randomUUID()}`,
+    });
+    expect(() =>
+      admin(
+        `set role authoring_operator; select private.authoring_open(${literal(relabeled)})`,
+      ),
+    ).toThrow(/IMMUTABLE_REVISION_REQUIRED/);
+    const clone = {
+      ...bundle,
+      id: randomUUID(),
+      stableId: `relabel-${randomUUID()}`,
+    };
+    const cloneBundle = rehash(clone);
+    importBundles([cloneBundle]);
+    expect(() =>
+      admin(
+        `set role qualification_operator; select private.qualification_enqueue('${clone.id}','${work.batch}',${literal(work.spec.evidence)})`,
+      ),
+    ).toThrow(/AUTHORING_HANDOFF_REQUIRED/);
+  });
+  it('preserves authored lineage and immutable parentage through one independently qualified revision', async () => {
+    const work = openAuthor();
+    authorTransport(work);
+    await authorOnce(work.id);
+    const first = handoff(work);
+    provider(first.bundle, (stage, value) =>
+      stage === 'critic'
+        ? {
+            ...outputs(first.bundle).critic,
+            objections: ['Unsupported alternative.'],
+          }
+        : value,
+    );
+    expect(await qualifyOnce(first.job)).toMatchObject({
+      state: 'quarantined',
+      requestsUsed: 3,
+    });
+    const revised = openAuthor(work.bundle, {}, work.id);
+    authorTransport(revised);
+    expect(await authorOnce(revised.id)).toMatchObject({ state: 'authored' });
+    const second = handoff(revised);
+    expect(second.bundle.parentId).toBe(first.bundle.id);
+    expect(second.bundle.version).toBe(2);
+    provider(second.bundle);
+    expect(await qualifyOnce(second.job)).toMatchObject({ state: 'qualified' });
+    const receipt = JSON.parse(
+      admin(
+        `select evidence from private.qualification_runs where candidate_id='${second.bundle.id}'`,
+      ),
+    );
+    expect(receipt.requestsUsed).toBe(9);
+    expect(receipt.lineageRequestsUsed).toBe(13);
+    expect(authorExport(revised.id).work.lineage).toBe(
+      authorExport(work.id).work.lineage,
+    );
+  });
+  it('shares the three-request term allowance with its two independent qualification tasks', async () => {
+    const work = openAuthor(candidate('term'));
+    authorTransport(work);
+    expect(await authorOnce(work.id)).toMatchObject({ state: 'authored' });
+    const { bundle, job } = handoff(work);
+    provider(bundle);
+    expect(await qualifyOnce(job)).toMatchObject({ state: 'qualified' });
+    const receipt = JSON.parse(
+      admin(
+        `select evidence from private.qualification_runs where candidate_id='${bundle.id}'`,
+      ),
+    );
+    expect(receipt.requestsUsed).toBe(3);
+    expect(receipt.fixtureKinds).toEqual([]);
+    const question = candidate();
+    if (question.kind !== 'question') throw new Error('Question required');
+    question.dependencies = [{ id: bundle.id, digest: bundle.digest }];
+    question.payload.terms = [
+      { termId: bundle.id, required: true, exposure: 'pre_attempt_safe' },
+    ];
+    const linked = openAuthor(rehash(question), {}, null, [bundle]);
+    authorTransport(linked);
+    expect(await authorOnce(linked.id)).toMatchObject({ state: 'authored' });
+    const next = handoff(linked);
+    provider(next.bundle);
+    expect(await qualifyOnce(next.job)).toMatchObject({ state: 'qualified' });
+    expect(next.bundle.dependencies).toEqual([
+      { id: bundle.id, digest: bundle.digest },
+    ]);
+  });
+  it('rejects metadata-only authored clones before import of the exact handoff', async () => {
+    const work = openAuthor(candidate('term'));
+    authorTransport(work);
+    await authorOnce(work.id);
+    const authored = authorExport(work.id).work.bundle as ContentBundle;
+    const clone = {
+      ...structuredClone(authored),
+      id: randomUUID(),
+      stableId: `relabeled-${randomUUID()}`,
+      sources: authored.sources.map((source) => ({
+        ...source,
+        id: `source-${randomUUID()}`,
+        accessedAt: '2020-01-01T00:00:00Z',
+      })),
+    };
+    clone.claims = clone.claims.map((claim) => ({
+      ...claim,
+      sourceIds: [clone.sources[0].id],
+    }));
+    const relabeled = rehash(clone);
+    importBundles([relabeled]);
+    const evidence = work.spec.evidence.map((snapshot) => ({
+      ...snapshot,
+      sourceId: relabeled.sources[0].id,
+    }));
+    expect(() =>
+      admin(
+        `set role qualification_operator; select private.qualification_enqueue('${relabeled.id}','${work.batch}',${literal(evidence)})`,
+      ),
+    ).toThrow(/AUTHORING_HANDOFF_REQUIRED/);
+    expect(
+      admin(
+        `select count(*) from private.qualification_inputs where candidate_id='${relabeled.id}'`,
+      ),
+    ).toBe('0');
+    expect(authorExport(work.id).requests).toHaveLength(1);
+    const newEdition = rehash({
+      ...relabeled,
+      id: randomUUID(),
+      stableId: `new-source-${randomUUID()}`,
+      sources: relabeled.sources.map((source) => ({
+        ...source,
+        edition: 'synthetic-v2',
+      })),
+    });
+    importBundles([newEdition]);
+    expect(
+      admin(
+        `set role qualification_operator; select private.qualification_enqueue('${newEdition.id}','${work.batch}',${literal(evidence.map((snapshot) => ({ ...snapshot, edition: 'synthetic-v2' })))})`,
+      ),
+    ).toBeTruthy();
+  });
+  it('allows one schema repair, retains charges, and permits only one separately bounded revision', async () => {
+    const work = openAuthor();
+    const transport = authorTransport(work, true);
+    expect(await authorOnce(work.id)).toMatchObject({
+      state: 'quarantined',
+      requestsUsed: 2,
+    });
+    expect(transport).toHaveBeenCalledTimes(2);
+    const secondConfig = configuration({
+      toolchainVersion: 'conceptual-no-execution-v1',
+    });
+    const batch = admin(
+      `set role qualification_operator; select private.qualification_open_batch(${literal(secondConfig)})`,
+    );
+    const spec = {
+      ...work.spec,
+      id: randomUUID(),
+      batchId: batch,
+      revisionOf: work.id,
+    };
+    const plan = compileAuthoring(spec);
+    const id = admin(
+      `set role authoring_operator; select private.authoring_open(${literal(plan)})`,
+    );
+    enable(secondConfig);
+    const next = { ...work, id, spec, plan, batch, config: secondConfig };
+    authorTransport(next, true);
+    expect(await authorOnce(id)).toMatchObject({
+      state: 'rejected',
+      requestsUsed: 2,
+    });
+    expect(authorExport(id).work.lineage).toBe(
+      authorExport(work.id).work.lineage,
+    );
+    expect(() =>
+      admin(
+        `set role authoring_operator; select private.authoring_open(${literal(compileAuthoring({ ...spec, id: randomUUID(), revisionOf: id }))})`,
+      ),
+    ).toThrow(/LINEAGE_EXHAUSTED/);
+  });
+  it('does not dispatch past shared batch caps or with stale exact run authorization', async () => {
+    const work = openAuthor(candidate(), { batchCap: 10 });
+    authorTransport(work);
+    await authorOnce(work.id);
+    const { bundle, job } = handoff(work);
+    const transport = provider(bundle);
+    expect(await qualifyOnce(job)).toMatchObject({
+      state: 'queued',
+      reason: 'BUDGET_EXCEEDED',
+    });
+    expect(transport).not.toHaveBeenCalled();
+    const blocked = openAuthor();
+    vi.stubEnv('AUTHORING_RUN_AUTHORIZATION_DIGEST', '0'.repeat(64));
+    vi.stubEnv('PGOPTIONS', '-c role=authoring_worker');
+    expect(await authorOnce(blocked.id)).toMatchObject({
+      state: 'queued',
+      reason: 'AUTHORING_DISABLED',
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+  it('reclaims expired authoring leases without clearing unknown reservations or accepting stale completions', () => {
+    const work = openAuthor();
+    const first = authoringSql('claim', [work.id]) as { lease: string };
+    const reserved = authoringSql('reserve', [work.id, first.lease, false]);
+    admin(
+      `update private.authoring_jobs set lease_until=now()-interval '1 second' where id='${work.id}'`,
+    );
+    const second = authoringSql('claim', [work.id]) as {
+      lease: string;
+      requestsUsed: number;
+    };
+    expect(second.lease).not.toBe(first.lease);
+    expect(second.requestsUsed).toBe(1);
+    expect(() =>
+      authoringSql('complete', [
+        work.id,
+        first.lease,
+        reserved,
+        null,
+        'PROVIDER_TIMEOUT',
+        null,
+        null,
+      ]),
+    ).toThrow('STALE_LEASE');
+    expect(authorExport(work.id).requests[0]).toMatchObject({
+      reserved_cents: 10,
+      actual_cents: null,
+    });
+    const request = authoringSql('reserve', [work.id, second.lease, false]);
+    authoringSql('complete', [
+      work.id,
+      second.lease,
+      request,
+      null,
+      'PROVIDER_TIMEOUT',
+      0,
+      { inputTokens: 0, outputTokens: 0 },
+    ]);
+    expect(
+      authorExport(work.id).requests.every(
+        (r: { actual_cents: unknown }) => r.actual_cents === null,
+      ),
+    ).toBe(true);
+  });
+  it('keeps authoring, import, qualification, and publication capabilities disjoint', () => {
+    for (const role of [
+      'anon',
+      'authenticated',
+      'service_role',
+      'content_importer',
+      'content_publisher',
+      'qualification_operator',
+      'qualification_worker',
+      'authoring_operator',
+      'authoring_worker',
+    ]) {
+      expect(() =>
+        admin(`set role ${role}; select * from private.authoring_inputs`),
+      ).toThrow(/permission denied/);
+    }
+    expect(
+      admin(
+        "select has_function_privilege('authoring_worker','private.publish_content_batch(jsonb)','execute')",
+      ),
+    ).toBe('f');
+    expect(
+      admin(
+        "select has_function_privilege('authoring_worker','private.import_content_manifest(jsonb)','execute')",
+      ),
+    ).toBe('f');
+    expect(
+      admin(
+        "select has_function_privilege('authoring_worker','private.qualification_finish(uuid,uuid)','execute')",
+      ),
+    ).toBe('f');
+    expect(
+      admin(
+        "select has_function_privilege('authoring_operator','private.authoring_complete(uuid,uuid,uuid,jsonb,text,integer,jsonb)','execute')",
+      ),
+    ).toBe('f');
+  });
+});
 describe('trusted imported-candidate qualification', () => {
+  it('matches JavaScript trimming for duplicate critical claims', () => {
+    const bundle = candidate();
+    if (bundle.kind !== 'question') throw new Error('Question required');
+    const claim = bundle.payload.rubric.requiredClaims[0];
+    for (const whitespace of [
+      ' ',
+      '\t',
+      '\n',
+      '\v',
+      '\f',
+      '\r',
+      '\u00a0',
+      '\u1680',
+      '\u2000',
+      '\u2001',
+      '\u2002',
+      '\u2003',
+      '\u2004',
+      '\u2005',
+      '\u2006',
+      '\u2007',
+      '\u2008',
+      '\u2009',
+      '\u200a',
+      '\u2028',
+      '\u2029',
+      '\u202f',
+      '\u205f',
+      '\u3000',
+      '\ufeff',
+    ]) {
+      bundle.payload.rubric.requiredClaims = [
+        claim,
+        `${whitespace}${claim.toUpperCase()}${whitespace}`,
+      ];
+      expect(calibrationIssues(bundle)).toEqual([
+        'RUBRIC_CALIBRATION_REQUIRED',
+      ]);
+      expect(
+        admin(`select private.calibrated_rubric_v2(${literal(bundle)})`),
+      ).toBe('f');
+    }
+    bundle.payload.rubric.requiredClaims = [claim, `\u200b${claim}`];
+    expect(calibrationIssues(bundle)).toEqual([]);
+    expect(
+      admin(`select private.calibrated_rubric_v2(${literal(bundle)})`),
+    ).toBe('t');
+  });
+  it('rejects mixed calibration configuration and caps above the authorized daily or monthly ceilings', () => {
+    for (const overrides of [
+      { policyVersion: 'content-policy-v1' },
+      { modelEvaluationProtocolVersion: 'release-evaluation-v1' },
+      { graderVersion: 'grader-v1' },
+      { dailyCap: 1001 },
+      { monthlyCap: 2001 },
+    ]) {
+      expect(() =>
+        admin(
+          `set role qualification_operator;select private.qualification_open_batch(${literal(configuration(overrides))})`,
+        ),
+      ).toThrow(/QUALIFICATION_DISABLED/);
+    }
+    expect(
+      admin(
+        `set role qualification_operator;select private.qualification_open_batch(${literal(configuration({ dailyCap: 1000, monthlyCap: 2000 }))})`,
+      ),
+    ).toBeTruthy();
+  });
   it('runs independent SDK stages, derives a publishable receipt, and never publishes itself', async () => {
     const bundle = candidate();
     const { job } = enqueue(bundle);
@@ -375,6 +979,125 @@ describe('trusted imported-candidate qualification', () => {
     ).toThrow(/IMMUTABLE_HISTORY/);
     expect(await qualifyOnce(job)).toBeNull();
     expect(transport).toHaveBeenCalledTimes(8);
+  });
+  it('rechecks exact critic link sets during finalization instead of trusting worker success', async () => {
+    const terms = [candidate('term'), candidate('term')];
+    for (const term of terms) {
+      const setup = enqueue(term);
+      provider(term);
+      expect(await qualifyOnce(setup.job)).toMatchObject({
+        state: 'qualified',
+      });
+    }
+    for (const variant of [
+      'empty',
+      'extra-empty',
+      'correct',
+      'extra',
+      'duplicate',
+      'missing',
+      'version',
+      'exposure',
+      'unsafe',
+    ]) {
+      let bundle = candidate();
+      if (bundle.kind !== 'question') throw new Error('Question required');
+      if (variant !== 'empty' && variant !== 'extra-empty') {
+        bundle.dependencies = terms.map((term) => ({
+          id: term.id,
+          digest: term.digest,
+        }));
+        bundle.payload.terms = terms.map((term, index) => ({
+          termId: term.id,
+          required: false,
+          exposure: index ? 'post_grade_only' : 'pre_attempt_safe',
+        }));
+        bundle = rehash(bundle);
+      }
+      const { job, config } = enqueue(bundle);
+      const values = outputs(bundle);
+      const links = structuredClone(values.critic.links);
+      if (variant === 'extra-empty')
+        links.push({
+          termId: terms[0].id,
+          exposure: 'pre_attempt_safe',
+          verdict: 'safe',
+          reason: 'Invented link not supplied by this question.',
+          required: undefined,
+        });
+      if (variant === 'extra')
+        links.push({ ...links[0], termId: randomUUID() });
+      if (variant === 'duplicate') links.push(links[0]);
+      if (variant === 'missing') links.pop();
+      if (variant === 'version') links[0].termId = randomUUID();
+      if (variant === 'exposure') links[0].exposure = 'post_grade_only';
+      if (variant === 'unsafe') links[0].verdict = 'spoiler_or_uncertain';
+      let work = qualificationSql('claim', [job]) as { lease: string };
+      const stages = [
+        'source',
+        'execution',
+        'fixtures',
+        'critic',
+        ...kinds.map((kind) => `evaluate_${kind}`),
+      ];
+      for (const stage of stages) {
+        const fixture = values.fixtures.cases.find(
+          (f) => `evaluate_${f.kind}` === stage,
+        );
+        const output =
+          stage === 'execution'
+            ? {
+                status: 'not_applicable',
+                reason:
+                  'Synthetic conceptual candidate with no executable content.',
+              }
+            : stage === 'critic'
+              ? { ...values.critic, links }
+              : fixture
+                ? {
+                    outcome: 'scored',
+                    score: fixture.minScore,
+                    criticalClaimsMet: fixture.minScore >= 3,
+                    correctClaims: [],
+                    missingClaims: [],
+                    incorrectClaims: [],
+                    idealAnswer: 'Synthetic answer.',
+                    explanation: 'Synthetic consistency check.',
+                  }
+                : values[stage as 'source' | 'fixtures'];
+        const request =
+          stage === 'execution'
+            ? null
+            : qualificationSql('reserve_cost', [
+                job,
+                work.lease,
+                stage,
+                false,
+                prompt(config),
+              ]);
+        work = qualificationSql('complete', [
+          job,
+          work.lease,
+          stage,
+          request,
+          output,
+          null,
+          request ? 1 : null,
+          request ? { inputTokens: 100, outputTokens: 100 } : null,
+        ]) as { lease: string };
+      }
+      expect(qualificationSql('finish', [job, work.lease])).toMatchObject({
+        state:
+          variant === 'empty' || variant === 'correct'
+            ? 'qualified'
+            : 'quarantined',
+      });
+      expect(
+        admin(
+          `select count(*) from private.qualification_runs where candidate_id='${bundle.id}'`,
+        ),
+      ).toBe(variant === 'empty' || variant === 'correct' ? '1' : '0');
+    }
   });
   it('marks term-only fixture and execution applicability without grading learner attempts', async () => {
     const bundle = candidate('term');
@@ -546,8 +1269,8 @@ describe('trusted imported-candidate qualification', () => {
       ).toBe('0');
     }
   });
-  it('rejects grader reversals, out-of-range scores and scored ambiguity', async () => {
-    for (const failure of ['reversal', 'range', 'ambiguous']) {
+  it('rejects grader reversals, out-of-range scores and uncertain non-answers', async () => {
+    for (const failure of ['reversal', 'range', 'non_answer']) {
       const bundle = candidate();
       const { job } = enqueue(bundle);
       provider(bundle, (stage, value) => {
@@ -563,20 +1286,14 @@ describe('trusted imported-candidate qualification', () => {
           return {
             assessment: {
               ...(value as { assessment: object }).assessment,
-              score: 4,
+              score: 5,
             },
           };
-        if (stage === 'evaluate_ambiguous' && failure === 'ambiguous')
+        if (stage === 'evaluate_non_answer' && failure === 'non_answer')
           return {
             assessment: {
-              outcome: 'scored',
-              score: 3,
-              criticalClaimsMet: true,
-              correctClaims: [],
-              missingClaims: [],
-              incorrectClaims: [],
-              idealAnswer: 'Synthetic.',
-              explanation: 'Synthetic.',
+              outcome: 'uncertain',
+              reason: 'The answer is evasive rather than context-defective.',
             },
           };
         return value;
@@ -752,9 +1469,14 @@ describe('trusted imported-candidate qualification', () => {
       second,
       null,
       'PROVIDER_TIMEOUT',
-      null,
-      null,
+      0,
+      { inputTokens: 0, outputTokens: 0 },
     ]);
+    expect(
+      admin(
+        `select actual_cents is null from private.provider_requests where id='${second}'`,
+      ),
+    ).toBe('t');
     const third = qualificationSql('reserve_cost', [
       job,
       replacement.lease,

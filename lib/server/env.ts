@@ -22,9 +22,11 @@ const serverSchema = z.object({
   ALLOW_LOCAL_SIMULATION: z.enum(['true', 'false']).default('false'),
   CONTENT_POLICY_VERSION: z.string().default(''),
   MODEL_EVAL_APPROVED: z.enum(['true', 'false']).default('false'),
+  MODEL_EVAL_PROTOCOL_VERSION: z.string().default(''),
+  MODEL_EVAL_RELEASE_DIGEST: z.string().default(''),
   PROVIDER_DATA_POLICY_APPROVED: z.enum(['true', 'false']).default('false'),
   DEPLOYMENT_RECOVERY_APPROVED: z.enum(['true', 'false']).default('false'),
-  AI_DAILY_CAP_CENTS: z.coerce.number().int().min(0).max(100).default(0),
+  AI_DAILY_CAP_CENTS: z.coerce.number().int().min(0).max(1000).default(0),
   AI_MONTHLY_CAP_CENTS: z.coerce.number().int().min(0).max(2000).default(0),
   OPENAI_MODEL: z.preprocess(
     (value) => (value === '' ? undefined : value),
@@ -61,6 +63,8 @@ export function assertLiveGrading() {
     env.GRADING_MODE !== 'live' ||
     env.CONTENT_POLICY_VERSION !== contentPolicy ||
     env.MODEL_EVAL_APPROVED !== 'true' ||
+    env.MODEL_EVAL_PROTOCOL_VERSION !== 'release-evaluation-v3' ||
+    !/^[a-f0-9]{64}$/.test(env.MODEL_EVAL_RELEASE_DIGEST) ||
     env.PROVIDER_DATA_POLICY_APPROVED !== 'true' ||
     env.DEPLOYMENT_RECOVERY_APPROVED !== 'true' ||
     !env.OPENAI_MODEL ||
