@@ -34,7 +34,7 @@ export function authoringSpec(
       };
     }),
     authorization: {
-      promptVersion: 'conceptual-authoring-prompts-v1',
+      promptVersion: 'conceptual-authoring-prompts-v2',
       schemaVersion: 'conceptual-authoring-schema-v1',
       codeDigest: evaluationCodeIdentity().digest,
       runAuthorizationDigest: 'a'.repeat(64),

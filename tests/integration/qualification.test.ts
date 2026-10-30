@@ -26,15 +26,16 @@ const kinds = ['wrong', 'partial', 'borderline_pass', 'strong', 'non_answer'];
 const configuration = (overrides: Record<string, unknown> = {}) => ({
   policyVersion: 'content-policy-v2',
   modelVersion: 'gpt-5.4-mini-2026-03-17',
-  promptVersion: 'qualification-prompts-v2',
-  schemaVersion: 'qualification-schema-v2',
+  promptVersion: 'qualification-prompts-v3',
+  schemaVersion: 'qualification-schema-v3',
   fixtureVersion: 'machine-fixtures-v2',
-  graderVersion: 'grader-v2',
-  gradingPromptVersion: 'grade-prompt-v2',
+  graderVersion: 'grader-v3',
+  gradingPromptVersion: 'grade-prompt-v3',
+  reasoningEffort: 'low',
   gradingSchemaVersion: 'grade-schema-v1',
   toolchainVersion: 'nonexecutable-tests-v1',
   modelEvaluationDigest: '1'.repeat(64),
-  modelEvaluationProtocolVersion: 'release-evaluation-v2',
+  modelEvaluationProtocolVersion: 'release-evaluation-v3',
   privacyApprovalDigest: '2'.repeat(64),
   deploymentApprovalDigest: '3'.repeat(64),
   providerConfigurationDigest: '4'.repeat(64),
@@ -213,6 +214,7 @@ function provider(
     expect(sent.model).toBe('gpt-5.4-mini-2026-03-17');
     expect(sent.store).toBe(false);
     expect(sent.service_tier).toBe('default');
+    expect(sent.reasoning).toEqual({ effort: 'low' });
     expect(sent.tools).toBeUndefined();
     expect(sent.max_output_tokens).toBe(3000);
     expect(sent.text.format.strict).toBe(true);
@@ -282,6 +284,7 @@ const prompt = (config: Configuration) => ({
   modelVersion: config.modelVersion,
   promptVersion: config.promptVersion,
   schemaVersion: config.schemaVersion,
+  reasoningEffort: config.reasoningEffort,
 });
 
 beforeEach(() => {
@@ -371,6 +374,124 @@ function handoff(work: ReturnType<typeof openAuthor>) {
 }
 
 describe('bounded conceptual authoring handoff', () => {
+  it('blocks unfinished prior-version work without changing its inputs or reserved ledger rows', () => {
+    const bundle = candidate('term');
+    importBundles([bundle]);
+    const config = Object.fromEntries(
+      Object.entries(
+        configuration({
+          toolchainVersion: 'conceptual-no-execution-v1',
+        }),
+      )
+        .filter(([key]) => key !== 'reasoningEffort')
+        .map(([key, value]) => [
+          key,
+          typeof value === 'string' ? value.replace(/-v3$/, '-v2') : value,
+        ]),
+    );
+    const plan = compileAuthoring(authoringSpec(candidate('term')));
+    const legacyPlan = structuredClone(plan) as Record<string, unknown>;
+    (legacyPlan.spec as typeof plan.spec).authorization.promptVersion =
+      'conceptual-authoring-prompts-v1' as typeof plan.spec.authorization.promptVersion;
+    const old = [
+      [
+        '202610300008_calibration_v2.sql',
+        [
+          'qualification_open_batch',
+          'qualification_precheck',
+          'qualification_reserve_cost',
+        ],
+      ],
+      [
+        '202610300009_conceptual_authoring.sql',
+        ['qualification_enqueue', 'authoring_open'],
+      ],
+    ] as const;
+    const entryPoints = old
+      .flatMap(([file, names]) => {
+        const source = readFileSync(`supabase/migrations/${file}`, 'utf8');
+        return names.map((name) =>
+          source
+            .match(
+              new RegExp(
+                `create (?:or replace )?function private\\.${name}\\([\\s\\S]*?\\n\\$\\$;`,
+              ),
+            )![0]
+            .replace('create function', 'create or replace function'),
+        );
+      })
+      .join('\n');
+    const upgrade = readFileSync(
+      'supabase/migrations/202610300010_evaluation_v3.sql',
+      'utf8',
+    ).replaceAll('create function', 'create or replace function');
+    expect(
+      admin(`
+      begin;
+      grant qualification_engine,authoring_engine to postgres;
+      ${entryPoints}
+      set role qualification_operator;
+      select private.qualification_open_batch(${literal(config)}) as batch \\gset
+      select private.qualification_enqueue('${bundle.id}',:'batch',${literal(snapshots(bundle))}) as job \\gset
+      set role qualification_worker;
+      select private.qualification_claim(:'job')->>'lease' as qlease \\gset
+      select private.qualification_reserve_cost(:'job',:'qlease','source',false,${literal(prompt(config as Configuration))}) as qrequest \\gset
+      set role authoring_operator;
+      select private.authoring_open(jsonb_set(${literal(legacyPlan)},'{spec,batchId}',to_jsonb(:'batch'::text))) as arun \\gset
+      set role authoring_worker;
+      select private.authoring_claim(:'arun')->>'lease' as alease \\gset
+      set role postgres;
+      select set_config('test.qjob',:'job',true),set_config('test.qlease',:'qlease',true),
+        set_config('test.qrequest',:'qrequest',true),set_config('test.arun',:'arun',true),set_config('test.alease',:'alease',true);
+      create temporary table prior_work as select
+        (select to_jsonb(i) from private.qualification_inputs i where id=:'job') as qualification,
+        (select to_jsonb(i) from private.authoring_inputs i where id=:'arun') as authoring,
+        (select to_jsonb(r) from private.provider_requests r where id=:'qrequest') as request;
+      ${upgrade}
+      set role qualification_worker;
+      do $test$
+      declare job uuid:=current_setting('test.qjob')::uuid; lease uuid:=current_setting('test.qlease')::uuid;
+      begin
+        if private.qualification_claim(job) is not null then raise exception 'LEGACY_RECLAIMED'; end if;
+        begin
+          perform private.qualification_complete(job,lease,'source',current_setting('test.qrequest')::uuid,null,'PROVIDER_REJECTED',null,null);
+          raise exception 'LATE_COMPLETION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','QUALIFICATION_DISABLED') then raise; end if; end;
+        begin
+          perform private.qualification_reserve_cost(job,lease,'source',false,'{}');
+          raise exception 'LATE_RESERVATION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','QUALIFICATION_DISABLED') then raise; end if; end;
+      end;
+      $test$;
+      set role authoring_worker;
+      do $test$
+      declare run uuid:=current_setting('test.arun')::uuid; lease uuid:=current_setting('test.alease')::uuid;
+      begin
+        if private.authoring_claim(run) is not null then raise exception 'LEGACY_RECLAIMED'; end if;
+        begin
+          perform private.authoring_reserve(run,lease,false);
+          raise exception 'LATE_RESERVATION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','AUTHORING_DISABLED') then raise; end if; end;
+        begin
+          perform private.authoring_complete(run,lease,gen_random_uuid(),null,'PROVIDER_REJECTED',null,null);
+          raise exception 'LATE_COMPLETION_ACCEPTED';
+        exception when others then if sqlerrm not in ('STALE_LEASE','AUTHORING_DISABLED') then raise; end if; end;
+      end;
+      $test$;
+      set role postgres;
+      do $test$
+      begin
+        if exists(select 1 from prior_work p where
+          p.qualification is distinct from (select to_jsonb(i) from private.qualification_inputs i where id=current_setting('test.qjob')::uuid)
+          or p.authoring is distinct from (select to_jsonb(i) from private.authoring_inputs i where id=current_setting('test.arun')::uuid)
+          or p.request is distinct from (select to_jsonb(r) from private.provider_requests r where id=current_setting('test.qrequest')::uuid))
+          then raise exception 'HISTORICAL_EVIDENCE_CHANGED'; end if;
+      end;
+      $test$;
+      rollback;
+    `),
+    ).not.toContain('ERROR');
+  });
   it('persists requests before SDK dispatch, imports privately, and derives a combined independent qualification receipt', async () => {
     const work = openAuthor();
     const transport = authorTransport(work);
@@ -858,6 +979,125 @@ describe('trusted imported-candidate qualification', () => {
     ).toThrow(/IMMUTABLE_HISTORY/);
     expect(await qualifyOnce(job)).toBeNull();
     expect(transport).toHaveBeenCalledTimes(8);
+  });
+  it('rechecks exact critic link sets during finalization instead of trusting worker success', async () => {
+    const terms = [candidate('term'), candidate('term')];
+    for (const term of terms) {
+      const setup = enqueue(term);
+      provider(term);
+      expect(await qualifyOnce(setup.job)).toMatchObject({
+        state: 'qualified',
+      });
+    }
+    for (const variant of [
+      'empty',
+      'extra-empty',
+      'correct',
+      'extra',
+      'duplicate',
+      'missing',
+      'version',
+      'exposure',
+      'unsafe',
+    ]) {
+      let bundle = candidate();
+      if (bundle.kind !== 'question') throw new Error('Question required');
+      if (variant !== 'empty' && variant !== 'extra-empty') {
+        bundle.dependencies = terms.map((term) => ({
+          id: term.id,
+          digest: term.digest,
+        }));
+        bundle.payload.terms = terms.map((term, index) => ({
+          termId: term.id,
+          required: false,
+          exposure: index ? 'post_grade_only' : 'pre_attempt_safe',
+        }));
+        bundle = rehash(bundle);
+      }
+      const { job, config } = enqueue(bundle);
+      const values = outputs(bundle);
+      const links = structuredClone(values.critic.links);
+      if (variant === 'extra-empty')
+        links.push({
+          termId: terms[0].id,
+          exposure: 'pre_attempt_safe',
+          verdict: 'safe',
+          reason: 'Invented link not supplied by this question.',
+          required: undefined,
+        });
+      if (variant === 'extra')
+        links.push({ ...links[0], termId: randomUUID() });
+      if (variant === 'duplicate') links.push(links[0]);
+      if (variant === 'missing') links.pop();
+      if (variant === 'version') links[0].termId = randomUUID();
+      if (variant === 'exposure') links[0].exposure = 'post_grade_only';
+      if (variant === 'unsafe') links[0].verdict = 'spoiler_or_uncertain';
+      let work = qualificationSql('claim', [job]) as { lease: string };
+      const stages = [
+        'source',
+        'execution',
+        'fixtures',
+        'critic',
+        ...kinds.map((kind) => `evaluate_${kind}`),
+      ];
+      for (const stage of stages) {
+        const fixture = values.fixtures.cases.find(
+          (f) => `evaluate_${f.kind}` === stage,
+        );
+        const output =
+          stage === 'execution'
+            ? {
+                status: 'not_applicable',
+                reason:
+                  'Synthetic conceptual candidate with no executable content.',
+              }
+            : stage === 'critic'
+              ? { ...values.critic, links }
+              : fixture
+                ? {
+                    outcome: 'scored',
+                    score: fixture.minScore,
+                    criticalClaimsMet: fixture.minScore >= 3,
+                    correctClaims: [],
+                    missingClaims: [],
+                    incorrectClaims: [],
+                    idealAnswer: 'Synthetic answer.',
+                    explanation: 'Synthetic consistency check.',
+                  }
+                : values[stage as 'source' | 'fixtures'];
+        const request =
+          stage === 'execution'
+            ? null
+            : qualificationSql('reserve_cost', [
+                job,
+                work.lease,
+                stage,
+                false,
+                prompt(config),
+              ]);
+        work = qualificationSql('complete', [
+          job,
+          work.lease,
+          stage,
+          request,
+          output,
+          null,
+          request ? 1 : null,
+          request ? { inputTokens: 100, outputTokens: 100 } : null,
+        ]) as { lease: string };
+      }
+      expect(qualificationSql('finish', [job, work.lease])).toMatchObject({
+        state:
+          variant === 'empty' || variant === 'correct'
+            ? 'qualified'
+            : 'quarantined',
+      });
+      expect(
+        admin(
+          `select count(*) from private.qualification_runs where candidate_id='${bundle.id}'`,
+        ),
+      ).toBe(variant === 'empty' || variant === 'correct' ? '1' : '0');
+    }
   });
   it('marks term-only fixture and execution applicability without grading learner attempts', async () => {
     const bundle = candidate('term');

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { domainSchema } from '../contracts/content.ts';
-import { gradingInstructions } from '../contracts/grading.ts';
+import { gradingAnchors } from '../contracts/grading.ts';
 import { bundleSchema, contentDigest, sourceSchema } from './manifest.ts';
 import { evaluationCodeIdentity } from './evaluation-contract.ts';
 import { calibrationIssues, sourceSnapshot } from './qualification-contract.ts';
@@ -28,7 +28,7 @@ export const authoringSpecification = z
     dependencies: z.array(bundleSchema).max(10),
     authorization: z
       .object({
-        promptVersion: z.literal('conceptual-authoring-prompts-v1'),
+        promptVersion: z.literal('conceptual-authoring-prompts-v2'),
         schemaVersion: z.literal('conceptual-authoring-schema-v1'),
         codeDigest: digest,
         runAuthorizationDigest: digest,
@@ -59,7 +59,7 @@ export function authoringTask(spec: AuthoringSpecification, repair: boolean) {
     'The referenceAnswer must predeclare a question-relevant "Score 5:" criterion. If no meaningful discriminator exists, explicitly award 5 for a fully correct answer without extra prose. ' +
     'Link only supplied exact term dependencies. Use post_grade_only for any solution-bearing definition. ' +
     'For a term supply an original formal definition, intuition and neutral example in the exact domain. ' +
-    gradingInstructions(false) +
+    gradingAnchors +
     (repair
       ? ' The prior response was invalid. Return a complete schema-valid draft, not an approval.'
       : '');

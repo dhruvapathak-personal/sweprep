@@ -101,6 +101,7 @@ function provider(
     expect(entry).toBeTruthy();
     expect(body.store).toBe(false);
     expect(body.service_tier).toBe('default');
+    expect(body.reasoning).toEqual({ effort: 'low' });
     expect(body.tools).toBeUndefined();
     expect(body.max_output_tokens).toBe(3000);
     const reserved = JSON.parse(
@@ -148,54 +149,170 @@ afterEach(() => {
 });
 
 describe('separately authorized release evaluation', () => {
-  it('stops in-flight legacy evaluation work on upgrade without rewriting its frozen evidence', () => {
-    const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
-    const legacy = {
-      ...plan,
-      configuration: Object.fromEntries(
-        Object.entries(plan.configuration).map(([key, value]) => [
-          key,
-          typeof value === 'string' ? value.replace(/-v2$/, '-v1') : value,
-        ]),
-      ),
+  it('refuses missing, duplicate and ungrounded facet expectations before enrollment', () => {
+    for (const variant of [
+      'missing',
+      'duplicate',
+      'unknown-source',
+      'masked-negative',
+    ]) {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const entry = plan.package.dataset.cases.find(
+        (c) => c.id === 'source-unsupported',
+      )!;
+      if (variant === 'missing') entry.expected.facets = null;
+      if (variant === 'duplicate')
+        entry.expected.facets!.claims.push(entry.expected.facets!.claims[0]);
+      if (variant === 'unknown-source')
+        entry.expected.facets!.claims[0].sourceId = 'unsupplied';
+      if (variant === 'masked-negative')
+        entry.expected.facets!.claims[0].verdict = 'supported';
+      plan.cases.find((c) => c.id === entry.id)!.expected = entry.expected;
+      plan.package = rehash(plan.package);
+      plan.packageDigest = plan.package.digest;
+      plan.datasetDigest = contentDigest(plan.package.dataset);
+      expect(() =>
+        admin(
+          `set role evaluation_operator; select private.evaluation_open(${literal(plan)})`,
+        ),
+      ).toThrow(/EVALUATION_INPUT_INVALID/);
+    }
+  });
+  it('rejects extra and duplicate critic links at the privileged acceptance boundary', () => {
+    const input = syntheticPackage();
+    const clear = input.dataset.cases.find((c) => c.id === 'critic-clear')!;
+    const linked = input.dataset.cases.find((c) => c.id === 'critic-spoiler')!;
+    const candidate = linked.candidate as ReturnType<typeof questionBundle>;
+    const finding = {
+      termId: candidate.payload.terms[0].termId,
+      exposure: 'pre_attempt_safe',
+      verdict: 'safe',
+      reason: 'Synthetic contextual check.',
     };
-    legacy.configurationDigest = contentDigest(legacy.configuration);
-    legacy.identity = contentDigest({
-      packageDigest: legacy.packageDigest,
-      datasetDigest: legacy.datasetDigest,
-      codeDigest: legacy.code.digest,
-      protocolVersion: legacy.configuration.protocolVersion,
-      modelVersion: legacy.configuration.modelVersion,
-    });
-    const original = readFileSync(
-      'supabase/migrations/202610290007_model_evaluation.sql',
-      'utf8',
-    );
-    const entryPoints = ['open', 'reserve']
-      .map((name) =>
-        original
-          .match(
-            new RegExp(
-              `create function private\\.evaluation_${name}\\([\\s\\S]*?\\n\\$\\$;`,
-            ),
-          )![0]
-          .replace('create function', 'create or replace function'),
-      )
-      .join('\n');
-    const upgrade = readFileSync(
-      'supabase/migrations/202610300008_calibration_v2.sql',
-      'utf8',
-    ).replace(
-      'create function private.calibrated_rubric_v2',
-      'create or replace function private.calibrated_rubric_v2',
-    );
-    expect(
-      admin(`
+    for (const entry of [clear, linked]) {
+      const output = modelOutput(entry) as Record<string, unknown>;
+      const valid = entry === clear ? [] : [finding];
+      const accepts = (links: unknown[]) =>
+        admin(
+          `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_acceptance(${literal(entry)},${literal({ ...output, links })}); rollback`,
+        );
+      expect(accepts(valid)).toBe('t');
+      for (const links of [
+        [...valid, { ...finding, termId: randomUUID() }],
+        ...(entry === linked
+          ? [
+              [],
+              [finding, finding],
+              [{ ...finding, termId: randomUUID() }],
+              [{ ...finding, exposure: 'post_grade_only' }],
+              [{ ...finding, verdict: 'spoiler_or_uncertain' }],
+            ]
+          : []),
+      ])
+        expect(accepts(links)).toBe('f');
+    }
+  });
+  it('compares target negative facets even when unrelated flags already reject the output', () => {
+    const input = syntheticPackage();
+    for (const [id, facet] of [
+      ['source-unsupported', 'claims'],
+      ['critic-spoiler', 'links'],
+      ['critic-clear', 'fixtures'],
+    ] as const) {
+      const entry = input.dataset.cases.find((c) => c.id === id)!;
+      const output = modelOutput(entry) as Record<string, unknown>;
+      const expected = structuredClone(entry.expected);
+      if (facet === 'fixtures') {
+        expected.accepted = false;
+        expected.facets!.fixtures[0].verdict = 'unsupported';
+      }
+      const wrong = {
+        ...output,
+        privacy: 'private_or_uncertain',
+        [facet]: (output[facet] as Record<string, unknown>[]).map(
+          (finding) => ({
+            ...finding,
+            verdict: facet === 'links' ? 'safe' : 'supported',
+          }),
+        ),
+      };
+      const mismatches = JSON.parse(
+        admin(
+          `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_mismatches(${literal({ ...entry, expected })},${literal(wrong)},'CHECK_FAILED'); rollback`,
+        ),
+      );
+      expect(mismatches).toContain(`FACET_${facet.toUpperCase()}_MISMATCH`);
+      expect(mismatches).toContain('FACET_PRIVACY_MISMATCH');
+      const corrected = {
+        ...output,
+        [facet]: (output[facet] as Record<string, unknown>[]).map(
+          (finding, index) => ({
+            ...finding,
+            verdict: expected.facets![facet][index].verdict,
+          }),
+        ),
+      };
+      expect(
+        JSON.parse(
+          admin(
+            `begin; grant evaluation_engine to postgres; set role evaluation_engine; select private.evaluation_mismatches(${literal({ ...entry, expected })},${literal(corrected)},'CHECK_FAILED'); rollback`,
+          ),
+        ),
+      ).toEqual([]);
+    }
+  });
+  it.each([1, 2])(
+    'stops in-flight v%s evaluation work on upgrade without rewriting its frozen evidence',
+    (version) => {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const legacy = {
+        ...plan,
+        configuration: Object.fromEntries(
+          Object.entries(plan.configuration).map(([key, value]) => [
+            key,
+            typeof value === 'string'
+              ? value
+                  .replace(/-(prompts|schema)?v3$/, (suffix) =>
+                    suffix.replace('3', String(version)),
+                  )
+                  .replace(/-v2$/, version === 1 ? '-v1' : '-v2')
+              : value,
+          ]),
+        ),
+      };
+      legacy.configurationDigest = contentDigest(legacy.configuration);
+      legacy.identity = contentDigest({
+        packageDigest: legacy.packageDigest,
+        datasetDigest: legacy.datasetDigest,
+        codeDigest: legacy.code.digest,
+        protocolVersion: legacy.configuration.protocolVersion,
+        modelVersion: legacy.configuration.modelVersion,
+      });
+      const original = readFileSync(
+        version === 1
+          ? 'supabase/migrations/202610290007_model_evaluation.sql'
+          : 'supabase/migrations/202610300008_calibration_v2.sql',
+        'utf8',
+      );
+      const entryPoints = ['open', 'reserve']
+        .map((name) =>
+          original
+            .match(
+              new RegExp(
+                `create (?:or replace )?function private\\.evaluation_${name}\\([\\s\\S]*?\\n\\$\\$;`,
+              ),
+            )![0]
+            .replace('create function', 'create or replace function'),
+        )
+        .join('\n');
+      const upgrade = readFileSync(
+        'supabase/migrations/202610300010_evaluation_v3.sql',
+        'utf8',
+      ).replaceAll('create function', 'create or replace function');
+      expect(
+        admin(`
         begin;
         grant evaluation_engine to postgres;
-        drop trigger if exists current_evaluation_observation on private.evaluation_observations;
-        drop trigger if exists current_evaluation_report on private.evaluation_reports;
-        drop function if exists private.require_current_evaluation();
         ${entryPoints}
         set role evaluation_operator;
         select private.evaluation_open(${literal(legacy)}) as run \\gset
@@ -253,8 +370,9 @@ describe('separately authorized release evaluation', () => {
         $test$;
         rollback;
       `),
-    ).not.toContain('ERROR');
-  });
+      ).not.toContain('ERROR');
+    },
+  );
   it('requires coherent frozen scored and uncertain expectations at the SQL boundary', () => {
     for (const change of [
       { minScore: null },
@@ -435,6 +553,7 @@ describe('separately authorized release evaluation', () => {
     expect(transport).toHaveBeenCalledTimes(11);
     const result = report(run);
     expect(result).toMatchObject({
+      schemaVersion: 'evaluation-report-v3',
       identity: plan.identity,
       packageDigest: plan.packageDigest,
       datasetDigest: plan.datasetDigest,
@@ -447,6 +566,18 @@ describe('separately authorized release evaluation', () => {
         (c: { mismatches: unknown[] }) => c.mismatches.length === 0,
       ),
     ).toBe(true);
+    expect(
+      result.cases.find((c: { id: string }) => c.id === 'critic-spoiler')
+        .facetResults,
+    ).toMatchObject({
+      links: { matched: true },
+      privacy: { expected: 'public', observed: 'public', matched: true },
+      originality: {
+        expected: 'original',
+        observed: 'original',
+        matched: true,
+      },
+    });
     expect(
       result.cases.find(
         (c: { id: string }) => c.id === 'grade-uncertain-context',
@@ -561,8 +692,14 @@ describe('separately authorized release evaluation', () => {
     const results = report(run).cases as { id: string; mismatches: string[] }[];
     const reasons = (id: string) =>
       results.find((c) => c.id === id)!.mismatches;
-    expect(reasons('source-unsupported')).toEqual(['ACCEPTANCE_REVERSAL']);
-    expect(reasons('critic-spoiler')).toEqual(['ACCEPTANCE_REVERSAL']);
+    expect(reasons('source-unsupported')).toEqual([
+      'ACCEPTANCE_REVERSAL',
+      'FACET_CLAIMS_MISMATCH',
+    ]);
+    expect(reasons('critic-spoiler')).toEqual([
+      'ACCEPTANCE_REVERSAL',
+      'FACET_LINKS_MISMATCH',
+    ]);
     expect(reasons('grade-wrong')).toEqual([
       'SCORE_RANGE',
       'PASS_FAIL_REVERSAL',
@@ -914,10 +1051,11 @@ describe('separately authorized release evaluation', () => {
       fixtureVersion: plan.configuration.fixtureVersion,
       graderVersion: plan.configuration.graderVersion,
       gradingPromptVersion: plan.configuration.gradingPromptVersion,
+      reasoningEffort: 'low',
       gradingSchemaVersion: plan.configuration.gradingSchemaVersion,
       toolchainVersion: 'nonexecutable-tests-v1',
       modelEvaluationDigest: '1'.repeat(64),
-      modelEvaluationProtocolVersion: 'release-evaluation-v2',
+      modelEvaluationProtocolVersion: 'release-evaluation-v3',
       privacyApprovalDigest: '2'.repeat(64),
       deploymentApprovalDigest: '3'.repeat(64),
       providerConfigurationDigest: '4'.repeat(64),
@@ -948,6 +1086,7 @@ describe('separately authorized release evaluation', () => {
       modelVersion: config.modelVersion,
       promptVersion: config.promptVersion,
       schemaVersion: config.schemaVersion,
+      reasoningEffort: config.reasoningEffort,
     };
     expect(() =>
       admin(

@@ -61,8 +61,10 @@ describe('independent release evaluation contracts', () => {
   it('exercises the exact learner request, preserves repair identity and rejects rewritten frozen requests', () => {
     const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
     for (const entry of plan.cases)
-      for (const request of Object.values(entry.requests ?? {}))
+      for (const request of Object.values(entry.requests ?? {})) {
         expect(request.service_tier).toBe('default');
+        expect(request.reasoning).toEqual({ effort: 'low' });
+      }
     const entry = plan.cases.find((c) => c.id === 'grade-strong')!;
     const candidate = entry.candidate as ReturnType<
       typeof syntheticPackage
@@ -144,6 +146,44 @@ describe('independent release evaluation contracts', () => {
     expect(() => compileEvaluation(rehash(collision), config)).toThrow(
       'HOLDOUT_IDENTITY_INVALID',
     );
+  });
+  it('requires explicit complete facets rather than deriving a negative from its ID or overall acceptance', () => {
+    const config = evaluationConfig();
+    for (const change of [
+      (
+        entry: ReturnType<typeof syntheticPackage>['dataset']['cases'][number],
+      ) => {
+        entry.expected.facets = null;
+      },
+      (
+        entry: ReturnType<typeof syntheticPackage>['dataset']['cases'][number],
+      ) => {
+        entry.expected.facets!.claims[0].verdict = 'supported';
+      },
+      (
+        entry: ReturnType<typeof syntheticPackage>['dataset']['cases'][number],
+      ) => {
+        entry.expected.facets!.claims.push(entry.expected.facets!.claims[0]);
+      },
+    ]) {
+      const input = syntheticPackage();
+      change(input.dataset.cases.find((c) => c.id === 'source-unsupported')!);
+      expect(() => compileEvaluation(rehash(input), config)).toThrow(
+        'CASE_FACETS_INVALID',
+      );
+    }
+    const renamed = syntheticPackage();
+    renamed.dataset.cases.find((c) => c.id === 'source-unsupported')!.id =
+      'opaque-independent-case';
+    expect(() => compileEvaluation(rehash(renamed), config)).not.toThrow();
+    for (const legacy of [
+      { protocolVersion: 'release-evaluation-v2' },
+      { promptVersion: 'qualification-prompts-v2' },
+      { reasoningEffort: 'none' },
+    ])
+      expect(() =>
+        compileEvaluation(rehash(renamed), { ...config, ...legacy }),
+      ).toThrow();
   });
   it('verifies retained attachment bytes and refuses traversal, escapes and missing notices without printing input', () => {
     const dir = mkdtempSync(join(tmpdir(), 'evaluation-package-'));

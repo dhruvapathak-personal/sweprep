@@ -60,7 +60,7 @@ function environment(live = false) {
     GRADING_MODE: live ? 'live' : 'disabled',
     CONTENT_POLICY_VERSION: 'content-policy-v2',
     MODEL_EVAL_APPROVED: 'true',
-    MODEL_EVAL_PROTOCOL_VERSION: 'release-evaluation-v2',
+    MODEL_EVAL_PROTOCOL_VERSION: 'release-evaluation-v3',
     MODEL_EVAL_RELEASE_DIGEST: 'a'.repeat(64),
     PROVIDER_DATA_POLICY_APPROVED: 'true',
     DEPLOYMENT_RECOVERY_APPROVED: 'true',
@@ -317,7 +317,7 @@ describe('grading boundaries without paid calls', () => {
     await expect(requestGrade(work, false)).rejects.toThrow(
       'LIVE_GRADING_DISABLED',
     );
-    vi.stubEnv('MODEL_EVAL_PROTOCOL_VERSION', 'release-evaluation-v2');
+    vi.stubEnv('MODEL_EVAL_PROTOCOL_VERSION', 'release-evaluation-v3');
     await expect(
       requestGrade({ ...work, modelEvaluationDigest: 'b'.repeat(64) }, false),
     ).rejects.toThrow('QUALIFICATION_REQUIRED');
@@ -369,6 +369,7 @@ describe('grading boundaries without paid calls', () => {
       expect(sent.service_tier).toBe('default');
       expect(sent.tools).toBeUndefined();
       expect(sent.max_output_tokens).toBe(3000);
+      expect(sent.reasoning).toEqual({ effort: 'low' });
       expect(sent.text.format.strict).toBe(true);
       const schema = JSON.stringify(sent.text.format.schema);
       expect(schema).not.toContain('"oneOf"');
@@ -393,13 +394,17 @@ describe('grading boundaries without paid calls', () => {
             ],
           },
         ],
-        usage: { input_tokens: 2000, output_tokens: 500 },
+        usage: {
+          input_tokens: 2000,
+          output_tokens: 3000,
+          output_tokens_details: { reasoning_tokens: 2800 },
+        },
       });
     });
     vi.stubGlobal('fetch', transport);
     const result = await requestGrade(work, false);
     expect(result.result).toEqual(assessment);
-    expect(result.actualCents).toBe(1);
+    expect(result.actualCents).toBe(2);
     expect(transport).toHaveBeenCalledTimes(1);
   });
   it('does not let SDK retries multiply transient errors and classifies timeout/rate limit delays', async () => {

@@ -63,7 +63,7 @@ export function assertLiveGrading() {
     env.GRADING_MODE !== 'live' ||
     env.CONTENT_POLICY_VERSION !== contentPolicy ||
     env.MODEL_EVAL_APPROVED !== 'true' ||
-    env.MODEL_EVAL_PROTOCOL_VERSION !== 'release-evaluation-v2' ||
+    env.MODEL_EVAL_PROTOCOL_VERSION !== 'release-evaluation-v3' ||
     !/^[a-f0-9]{64}$/.test(env.MODEL_EVAL_RELEASE_DIGEST) ||
     env.PROVIDER_DATA_POLICY_APPROVED !== 'true' ||
     env.DEPLOYMENT_RECOVERY_APPROVED !== 'true' ||

@@ -20,6 +20,11 @@ describe('snapshot-only conceptual authoring', () => {
       const spec = authoringSpec(bundle);
       const plan = compileAuthoring(spec);
       expect(plan.requests.original.store).toBe(false);
+      expect(plan.requests.original.instructions).not.toContain('Grade only');
+      expect(plan.requests.original.instructions).not.toContain(
+        'Return uncertain',
+      );
+      expect(plan.requests.original.instructions).toContain('every component');
       expect(plan.requests.original).not.toHaveProperty('tools');
       expect(plan.requests.original.instructions).not.toBe(
         plan.requests.repair.instructions,

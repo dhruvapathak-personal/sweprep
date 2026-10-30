@@ -38,14 +38,15 @@ export function evaluationConfig(
   overrides: Partial<EvaluationConfiguration> = {},
 ): EvaluationConfiguration {
   return {
-    protocolVersion: 'release-evaluation-v2',
+    protocolVersion: 'release-evaluation-v3',
     policyVersion: 'content-policy-v2',
     modelVersion: 'gpt-5.4-mini-2026-03-17',
-    promptVersion: 'qualification-prompts-v2',
-    schemaVersion: 'qualification-schema-v2',
+    promptVersion: 'qualification-prompts-v3',
+    schemaVersion: 'qualification-schema-v3',
     fixtureVersion: 'machine-fixtures-v2',
-    graderVersion: 'grader-v2',
-    gradingPromptVersion: 'grade-prompt-v2',
+    graderVersion: 'grader-v3',
+    gradingPromptVersion: 'grade-prompt-v3',
+    reasoningEffort: 'low',
     gradingSchemaVersion: 'grade-schema-v1',
     toolchainVersion: 'conceptual-no-execution-v1',
     inputUsdPerMillion: 0.75,
@@ -111,6 +112,26 @@ export function syntheticPackage(): EvaluationPackage {
     expected: {
       policy: [],
       accepted,
+      facets:
+        stage === 'source' || stage === 'critic'
+          ? {
+              privacy: 'public',
+              originality: 'original',
+              claims:
+                stage === 'source'
+                  ? candidate.claims.map((c) => ({
+                      claim: c.claim,
+                      sourceId: c.sourceIds[0],
+                      verdict: 'supported',
+                    }))
+                  : [],
+              fixtures:
+                stage === 'critic'
+                  ? kinds.map((kind) => ({ kind, verdict: 'supported' }))
+                  : [],
+              links: [],
+            }
+          : null,
       grade: null,
       basis: basis.map(({ sourceId, quote }) => ({ sourceId, quote })),
     },
@@ -144,6 +165,22 @@ export function syntheticPackage(): EvaluationPackage {
     {
       ...entry('source-unsupported', 'source', false),
       candidate: rehash(negative),
+      expected: {
+        ...entry('source-unsupported', 'source', false).expected,
+        facets: {
+          privacy: 'public',
+          originality: 'original',
+          fixtures: [],
+          links: [],
+          claims: [
+            {
+              claim: negative.claims[0].claim,
+              sourceId: evidence[0].sourceId,
+              verdict: 'unsupported',
+            },
+          ],
+        },
+      },
     },
     entry('fixtures-independent', 'fixtures', true),
     entry('critic-clear', 'critic', true),
@@ -151,6 +188,22 @@ export function syntheticPackage(): EvaluationPackage {
       ...entry('critic-spoiler', 'critic', false),
       candidate: linked,
       dependencies: [term],
+      expected: {
+        ...entry('critic-spoiler', 'critic', false).expected,
+        facets: {
+          privacy: 'public',
+          originality: 'original',
+          claims: [],
+          fixtures: kinds.map((kind) => ({ kind, verdict: 'supported' })),
+          links: [
+            {
+              termId: term.id,
+              exposure: 'pre_attempt_safe',
+              verdict: 'spoiler_or_uncertain',
+            },
+          ],
+        },
+      },
     },
     ...fixtures.cases.map((f) => ({
       ...entry(`grade-${f.kind}`, 'grade', null),
@@ -158,6 +211,7 @@ export function syntheticPackage(): EvaluationPackage {
       expected: {
         policy: [],
         accepted: null,
+        facets: null,
         grade: {
           kind: f.kind,
           outcome: f.expected,
@@ -184,6 +238,7 @@ export function syntheticPackage(): EvaluationPackage {
       expected: {
         policy: [],
         accepted: null,
+        facets: null,
         grade: {
           kind: 'uncertain_context',
           outcome: 'uncertain',
@@ -200,13 +255,14 @@ export function syntheticPackage(): EvaluationPackage {
       expected: {
         policy: ['REUSE_RIGHTS_REQUIRED'],
         accepted: null,
+        facets: null,
         grade: null,
         basis: [],
       },
     },
   ];
   const body = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     id: `synthetic-${randomUUID()}`,
     manifest: manifestFor([staged]),
     intakes: [{ candidateId: staged.id, evidence: snapshots(staged) }],

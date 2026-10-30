@@ -16,6 +16,8 @@ import {
   qualificationTask,
   sourceSnapshot,
   calibrationIssues,
+  sourceReview,
+  criticReview,
 } from './qualification-contract.ts';
 import { gradingTask } from '../contracts/grading.ts';
 import { structuredRequest } from './provider.ts';
@@ -38,14 +40,15 @@ const policyCode = z.enum([
 ]);
 export const evaluationConfiguration = z
   .object({
-    protocolVersion: z.literal('release-evaluation-v2'),
+    protocolVersion: z.literal('release-evaluation-v3'),
     policyVersion: z.literal('content-policy-v2'),
     modelVersion: z.literal('gpt-5.4-mini-2026-03-17'),
-    promptVersion: z.literal('qualification-prompts-v2'),
-    schemaVersion: z.literal('qualification-schema-v2'),
+    promptVersion: z.literal('qualification-prompts-v3'),
+    schemaVersion: z.literal('qualification-schema-v3'),
     fixtureVersion: z.literal('machine-fixtures-v2'),
-    graderVersion: z.literal('grader-v2'),
-    gradingPromptVersion: z.literal('grade-prompt-v2'),
+    graderVersion: z.literal('grader-v3'),
+    gradingPromptVersion: z.literal('grade-prompt-v3'),
+    reasoningEffort: z.literal('low'),
     gradingSchemaVersion: z.literal('grade-schema-v1'),
     toolchainVersion: z.literal('conceptual-no-execution-v1'),
     inputUsdPerMillion: z.literal(0.75),
@@ -95,6 +98,39 @@ const evaluationCase = z
       .object({
         policy: z.array(policyCode).max(10),
         accepted: z.boolean().nullable(),
+        facets: z
+          .object({
+            privacy: sourceReview.shape.privacy,
+            originality: sourceReview.shape.originality,
+            claims: z
+              .array(
+                sourceReview.shape.claims.element.pick({
+                  claim: true,
+                  sourceId: true,
+                  verdict: true,
+                }),
+              )
+              .max(30),
+            fixtures: z
+              .array(
+                criticReview.shape.fixtures.element.pick({
+                  kind: true,
+                  verdict: true,
+                }),
+              )
+              .max(5),
+            links: z
+              .array(
+                criticReview.shape.links.element.pick({
+                  termId: true,
+                  exposure: true,
+                  verdict: true,
+                }),
+              )
+              .max(20),
+          })
+          .strict()
+          .nullable(),
         grade: gradeExpectation.nullable(),
         basis: z
           .array(
@@ -122,7 +158,7 @@ const datasetSchema = z
   .strict();
 const packageSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     id,
     manifest: z.unknown(),
     intakes: z
@@ -170,6 +206,7 @@ const codePaths = [
   'scripts/content-author.ts',
   'supabase/migrations/202610300008_calibration_v2.sql',
   'supabase/migrations/202610300009_conceptual_authoring.sql',
+  'supabase/migrations/202610300010_evaluation_v3.sql',
   'supabase/migrations/202610290006_qualification.sql',
   'supabase/migrations/202610290007_model_evaluation.sql',
   'package-lock.json',
@@ -288,6 +325,53 @@ function compileCase(entry: EvaluationCase) {
     entry.dependencies,
   );
   const expected = entry.expected;
+  const facets = expected.facets;
+  if (entry.stage === 'source' || entry.stage === 'critic') {
+    const candidate = bundleSchema.parse(entry.candidate);
+    if (!facets) throw new Error('CASE_FACETS_INVALID');
+    const links = candidate.kind === 'question' ? candidate.payload.terms : [];
+    const fixtures =
+      candidate.kind === 'question' ? (entry.fixtures?.cases ?? []) : [];
+    const complete =
+      entry.stage === 'source'
+        ? !facets.fixtures.length &&
+          !facets.links.length &&
+          facets.claims.length === candidate.claims.length &&
+          new Set(facets.claims.map((c) => c.claim)).size ===
+            facets.claims.length &&
+          facets.claims.every((f) =>
+            candidate.claims.some(
+              (c) => c.claim === f.claim && c.sourceIds.includes(f.sourceId),
+            ),
+          )
+        : !facets.claims.length &&
+          facets.fixtures.length === fixtures.length &&
+          new Set(facets.fixtures.map((f) => f.kind)).size ===
+            facets.fixtures.length &&
+          facets.fixtures.every((f) =>
+            fixtures.some((c) => c.kind === f.kind),
+          ) &&
+          facets.links.length === links.length &&
+          new Set(facets.links.map((l) => l.termId)).size ===
+            facets.links.length &&
+          facets.links.every((l) =>
+            links.some(
+              (c) => c.termId === l.termId && c.exposure === l.exposure,
+            ),
+          );
+    const safe =
+      facets.privacy === 'public' &&
+      facets.originality === 'original' &&
+      facets.claims.every((c) => c.verdict === 'supported') &&
+      facets.fixtures.every((f) => f.verdict === 'supported') &&
+      facets.links.every(
+        (l) =>
+          l.verdict ===
+          (l.exposure === 'pre_attempt_safe' ? 'safe' : 'post_grade_only'),
+      );
+    if (!complete || safe !== expected.accepted)
+      throw new Error('CASE_FACETS_INVALID');
+  } else if (facets !== null) throw new Error('CASE_FACETS_INVALID');
   if (entry.stage === 'policy') {
     if (
       !expected.policy.length ||
@@ -492,6 +576,7 @@ export function validateEvaluationPlan(raw: EvaluationPlan) {
 export function offlineEvaluation(raw: unknown, configuration: unknown) {
   const plan = compileEvaluation(raw, configuration);
   return {
+    schemaVersion: 'evaluation-report-v3',
     identity: plan.identity,
     packageDigest: plan.packageDigest,
     datasetDigest: plan.datasetDigest,
