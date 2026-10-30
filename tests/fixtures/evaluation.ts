@@ -38,14 +38,14 @@ export function evaluationConfig(
   overrides: Partial<EvaluationConfiguration> = {},
 ): EvaluationConfiguration {
   return {
-    protocolVersion: 'release-evaluation-v1',
-    policyVersion: 'content-policy-v1',
+    protocolVersion: 'release-evaluation-v2',
+    policyVersion: 'content-policy-v2',
     modelVersion: 'gpt-5.4-mini-2026-03-17',
-    promptVersion: 'qualification-prompts-v1',
-    schemaVersion: 'qualification-schema-v1',
-    fixtureVersion: 'machine-fixtures-v1',
-    graderVersion: 'grader-v1',
-    gradingPromptVersion: 'grade-prompt-v1',
+    promptVersion: 'qualification-prompts-v2',
+    schemaVersion: 'qualification-schema-v2',
+    fixtureVersion: 'machine-fixtures-v2',
+    graderVersion: 'grader-v2',
+    gradingPromptVersion: 'grade-prompt-v2',
     gradingSchemaVersion: 'grade-schema-v1',
     toolchainVersion: 'conceptual-no-execution-v1',
     inputUsdPerMillion: 0.75,
@@ -81,17 +81,16 @@ export function syntheticPackage(): EvaluationPackage {
     'partial',
     'borderline_pass',
     'strong',
-    'ambiguous',
+    'non_answer',
   ] as const;
   const fixtures = {
     cases: kinds.map((kind, index) => ({
       kind,
       answer: `Synthetic independent answer ${kind}`,
-      expected:
-        kind === 'ambiguous' ? ('uncertain' as const) : ('scored' as const),
-      minScore: kind === 'ambiguous' ? null : [0, 1, 3, 4][index],
-      maxScore: kind === 'ambiguous' ? null : [0, 2, 3, 5][index],
-      expectedPass: kind === 'ambiguous' ? null : index >= 2,
+      expected: 'scored' as const,
+      minScore: [0, 1, 4, 4, 0][index],
+      maxScore: [0, 2, 4, 5, 0][index],
+      expectedPass: index === 2 || index === 3,
       reason:
         'The independently fixed synthetic expectation tests conformance, not curriculum quality.',
       basis,
@@ -121,7 +120,8 @@ export function syntheticPackage(): EvaluationPackage {
   negative.stableId += '-unsupported';
   negative.claims[0].claim = 'A deliberately unsupported synthetic assertion.';
   negative.payload.rubric.requiredClaims = [negative.claims[0].claim];
-  negative.payload.rubric.referenceAnswer = negative.claims[0].claim;
+  negative.payload.rubric.referenceAnswer =
+    negative.claims[0].claim + ' Score 5: A fully correct answer earns 5.';
   const spoiler = termBundle(`synthetic-spoiler-${randomUUID()}`);
   spoiler.payload.definition = candidate.payload.rubric.requiredClaims[0];
   const term = rehash(spoiler);
@@ -168,6 +168,32 @@ export function syntheticPackage(): EvaluationPackage {
         basis: [{ sourceId: basis[0].sourceId, quote: basis[0].quote }],
       },
     })),
+    {
+      ...entry('grade-uncertain-context', 'grade', null),
+      candidate: rehash({
+        ...candidate,
+        id: randomUUID(),
+        stableId: candidate.stableId + '-context-control',
+        payload: {
+          ...candidate.payload,
+          assumptions:
+            'Two equally authoritative labels conflict: the marker is amber and the marker is blue. No precedence rule is supplied.',
+        },
+      }),
+      answer: 'The marker is amber.',
+      expected: {
+        policy: [],
+        accepted: null,
+        grade: {
+          kind: 'uncertain_context',
+          outcome: 'uncertain',
+          minScore: null,
+          maxScore: null,
+          pass: null,
+        },
+        basis: [{ sourceId: basis[0].sourceId, quote: basis[0].quote }],
+      },
+    },
     {
       ...entry('policy-rights', 'policy', null),
       candidate: rights,

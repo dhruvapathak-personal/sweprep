@@ -9,6 +9,7 @@ import { providerBaseUrl, structuredRequest } from '@/lib/content/provider';
 
 export const workSchema = z.object({
   qualificationPolicy: z.string().nullable().default(null),
+  modelEvaluationDigest: z.string().nullable().default(null),
   job: z.object({
     attempt_id: z.uuid(),
     generation: z.number().int().positive(),
@@ -105,7 +106,8 @@ export async function requestGrade(work: GradingWork, repair: boolean) {
   const env = assertLiveGrading();
   if (
     work.question.content_review !== 'approved' ||
-    work.qualificationPolicy !== contentPolicy
+    work.qualificationPolicy !== contentPolicy ||
+    work.modelEvaluationDigest !== env.MODEL_EVAL_RELEASE_DIGEST
   )
     throw new Error('QUALIFICATION_REQUIRED');
   const task = gradingTask(

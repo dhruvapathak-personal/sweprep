@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const contentPolicy = 'content-policy-v1';
+export const contentPolicy = 'content-policy-v2';
 export const domains = [
   'cpp',
   'python',

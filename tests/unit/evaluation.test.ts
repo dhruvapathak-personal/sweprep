@@ -49,7 +49,7 @@ describe('independent release evaluation contracts', () => {
     });
     expect(
       first.cases.filter((c) => c.status === 'not_evaluated'),
-    ).toHaveLength(10);
+    ).toHaveLength(11);
     expect(fetch).not.toHaveBeenCalled();
     fetch.mockRestore();
     const dir = mkdtempSync(join(tmpdir(), 'evaluation-report-'));
@@ -114,7 +114,7 @@ describe('independent release evaluation contracts', () => {
     );
     const ambiguous = structuredClone(input);
     ambiguous.dataset.cases.find(
-      (c) => c.id === 'grade-ambiguous',
+      (c) => c.id === 'grade-uncertain-context',
     )!.expected.grade!.minScore = 0;
     expect(() => compileEvaluation(rehash(ambiguous), config)).toThrow(
       'CASE_EXPECTATION_INVALID',

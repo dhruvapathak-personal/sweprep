@@ -20,7 +20,7 @@ const entry = (title: string) => ({
   title,
   domain: 'cpp',
   category: 'Explain',
-  qualificationPolicy: 'content-policy-v1',
+  qualificationPolicy: 'content-policy-v2',
   uncalibrated: true,
 });
 it('pages through authenticated results and resets the cursor when filters change', async () => {

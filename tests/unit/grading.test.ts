@@ -9,6 +9,10 @@ import {
   workSchema,
 } from '@/lib/server/ai/grader';
 import { readJson, sameOrigin } from '@/lib/server/http';
+import {
+  gradingInstructions,
+  providerResultSchema,
+} from '@/lib/contracts/grading';
 
 const assessment = {
   outcome: 'scored',
@@ -21,7 +25,8 @@ const assessment = {
   explanation: 'The view does not extend lifetime.',
 };
 const work = workSchema.parse({
-  qualificationPolicy: 'content-policy-v1',
+  qualificationPolicy: 'content-policy-v2',
+  modelEvaluationDigest: 'a'.repeat(64),
   job: {
     attempt_id: '20000000-0000-4000-8000-000000000001',
     generation: 1,
@@ -53,8 +58,10 @@ function environment(live = false) {
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'synthetic-key',
     APP_URL: 'http://localhost:3000',
     GRADING_MODE: live ? 'live' : 'disabled',
-    CONTENT_POLICY_VERSION: 'content-policy-v1',
+    CONTENT_POLICY_VERSION: 'content-policy-v2',
     MODEL_EVAL_APPROVED: 'true',
+    MODEL_EVAL_PROTOCOL_VERSION: 'release-evaluation-v2',
+    MODEL_EVAL_RELEASE_DIGEST: 'a'.repeat(64),
     PROVIDER_DATA_POLICY_APPROVED: 'true',
     DEPLOYMENT_RECOVERY_APPROVED: 'true',
     AI_DAILY_CAP_CENTS: '100',
@@ -70,6 +77,39 @@ afterEach(() => {
 });
 
 describe('grading boundaries without paid calls', () => {
+  it('requires coherent critical flags for every score while preserving historical details', () => {
+    for (let score = 0; score <= 5; score++) {
+      const coherent = { ...assessment, score, criticalClaimsMet: score >= 3 };
+      expect(
+        providerResultSchema.safeParse({ assessment: coherent }).success,
+      ).toBe(true);
+      expect(
+        providerResultSchema.safeParse({
+          assessment: { ...coherent, criticalClaimsMet: score < 3 },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      gradeDetailsSchema.safeParse({
+        ...assessment,
+        score: 1,
+        criticalClaimsMet: true,
+      }).success,
+    ).toBe(true);
+    const instructions = gradingInstructions(false);
+    for (const anchor of [
+      'Score 0',
+      'Score 1',
+      'Score 2',
+      'Score 3',
+      'Score 4',
+      'Score 5',
+    ])
+      expect(instructions).toContain(anchor);
+    expect(instructions).toContain('concise');
+    expect(instructions).toContain('non-answer');
+    expect(instructions).toContain('contradictory');
+  });
   it('keeps all five questions and 25 example assessments pending human review', () => {
     expect(content.reviewStatus).toBe('pending_human_review');
     expect(content.reviewer).toBeNull();
@@ -82,6 +122,145 @@ describe('grading boundaries without paid calls', () => {
         value.examples.some((example) => example.expected === 'uncertain'),
       ),
     ).toBe(true);
+  });
+  it('round-trips frozen card anchors and a separate defective-context control through the learner adapter', async () => {
+    environment(true);
+    const examples = [
+      ['Blue square', 0],
+      ['I will answer later', 0],
+      ['The color starts with a', 1],
+      ['Amber', 2],
+      ['Amber circle, therefore every card has those labels', 3],
+      ['Amber circle', 4],
+      [
+        'Its printed labels are amber and circle; these do not assert physical properties',
+        5,
+      ],
+    ] as const;
+    for (const [answer, score] of examples) {
+      const expected = {
+        outcome: 'scored',
+        score,
+        criticalClaimsMet: score >= 3,
+        correctClaims: score ? ['A correct card-label fragment.'] : [],
+        missingClaims: score < 3 ? ['At least one required label.'] : [],
+        incorrectClaims:
+          score === 3 ? ['The unsupported all-card generalization.'] : [],
+        idealAnswer:
+          'Its printed labels are amber and circle, not physical properties.',
+        explanation:
+          'Frozen synthetic contract observation, not a model-quality result.',
+      };
+      const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const sent = JSON.parse(String(init?.body));
+        const input = JSON.parse(sent.input);
+        expect(input.learnerAnswer).toBe(answer);
+        expect(input.rubric.pass_score).toBe(4);
+        expect(input).not.toHaveProperty('expected');
+        expect(sent.instructions).toContain(
+          'Missing or contradicted required claims cap the score at 2',
+        );
+        expect(sent.instructions).toContain(
+          'a concise complete answer qualifies',
+        );
+        return Response.json({
+          object: 'response',
+          id: 'synthetic-card-response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({ assessment: expected }),
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        });
+      });
+      vi.stubGlobal('fetch', transport);
+      const result = await requestGrade(
+        {
+          ...work,
+          question: {
+            ...work.question,
+            content_blocks: [
+              {
+                type: 'text',
+                text: 'A fictional card prints color: amber; shape: circle. State both labels.',
+              },
+            ],
+          },
+          rubric: {
+            version: 'synthetic-card-v2',
+            pass_score: 4,
+            required_claims: [
+              'The printed color is amber.',
+              'The printed shape is circle.',
+            ],
+            reference_answer:
+              'Amber circle. Score 5: Explicitly identify both as printed labels, not physical properties.',
+          },
+          attempt: { ...work.attempt, answer_text: answer },
+        },
+        false,
+      );
+      expect(result.result).toEqual(expected);
+    }
+    const uncertain = {
+      outcome: 'uncertain',
+      reason:
+        'Two authoritative color labels conflict, with no precedence rule.',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          object: 'response',
+          id: 'synthetic-context-response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({ assessment: uncertain }),
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(
+      (
+        await requestGrade(
+          {
+            ...work,
+            question: {
+              ...work.question,
+              assumptions:
+                'The authoritative color labels conflict: amber and blue. No precedence rule exists.',
+            },
+          },
+          false,
+        )
+      ).result,
+    ).toEqual(uncertain);
+    expect(
+      providerResultSchema.parse({ assessment: uncertain }).assessment,
+    ).toEqual(uncertain);
+    expect(
+      providerResultSchema.safeParse({ assessment: { ...uncertain, score: 0 } })
+        .success,
+    ).toBe(false);
   });
   it('rejects out-of-range scores, raw HTML blocks, forged identity and unbounded request fields', () => {
     expect(
@@ -134,6 +313,14 @@ describe('grading boundaries without paid calls', () => {
         false,
       ),
     ).rejects.toThrow('QUALIFICATION_REQUIRED');
+    vi.stubEnv('MODEL_EVAL_PROTOCOL_VERSION', 'release-evaluation-v1');
+    await expect(requestGrade(work, false)).rejects.toThrow(
+      'LIVE_GRADING_DISABLED',
+    );
+    vi.stubEnv('MODEL_EVAL_PROTOCOL_VERSION', 'release-evaluation-v2');
+    await expect(
+      requestGrade({ ...work, modelEvaluationDigest: 'b'.repeat(64) }, false),
+    ).rejects.toThrow('QUALIFICATION_REQUIRED');
     expect(fetch).not.toHaveBeenCalled();
   });
   it('rejects hosted simulation and budgets above approved caps', () => {
@@ -154,7 +341,7 @@ describe('grading boundaries without paid calls', () => {
     vi.stubEnv('DEPLOYMENT_ENV', '');
     vi.stubEnv('APP_URL', 'https://trainer.example.test');
     expect(() => gradingMode()).toThrow('SIMULATION_NOT_LOCAL');
-    vi.stubEnv('AI_DAILY_CAP_CENTS', '101');
+    vi.stubEnv('AI_DAILY_CAP_CENTS', '1001');
     expect(() => assertLiveGrading()).toThrow('SETUP_REQUIRED');
   });
   it('supports hosted development without enabling grading or bypassing live approvals', async () => {

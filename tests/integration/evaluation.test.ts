@@ -147,11 +147,38 @@ afterEach(() => {
 });
 
 describe('separately authorized release evaluation', () => {
+  it('requires coherent frozen scored and uncertain expectations at the SQL boundary', () => {
+    for (const change of [
+      { minScore: null },
+      { minScore: 3 },
+      { minScore: 5, maxScore: 4 },
+      { pass: false },
+      { kind: 'uncertain_context', outcome: 'scored' },
+    ]) {
+      const plan = compileEvaluation(syntheticPackage(), evaluationConfig());
+      const entry = plan.package.dataset.cases.find(
+        (c) => c.id === 'grade-borderline_pass',
+      )!;
+      Object.assign(entry.expected.grade!, change);
+      Object.assign(
+        plan.cases.find((c) => c.id === entry.id)!.expected.grade!,
+        change,
+      );
+      plan.package = rehash(plan.package);
+      plan.packageDigest = plan.package.digest;
+      plan.datasetDigest = contentDigest(plan.package.dataset);
+      expect(() =>
+        admin(
+          `set role evaluation_operator;select private.evaluation_open(${literal(plan)})`,
+        ),
+      ).toThrow(/EVALUATION_INPUT_INVALID/);
+    }
+  });
   it.each([
     'source-unsupported',
     'critic-spoiler',
     'fixtures-independent',
-    'grade-ambiguous',
+    'grade-uncertain-context',
   ])(
     'rejects malformed nested observations for %s in database comparisons',
     async (id) => {
@@ -236,9 +263,9 @@ describe('separately authorized release evaluation', () => {
     const transport = provider(plan);
     expect(await evaluateOnce(run)).toMatchObject({
       state: 'completed',
-      requestsUsed: 11,
+      requestsUsed: 12,
     });
-    expect(transport).toHaveBeenCalledTimes(9);
+    expect(transport).toHaveBeenCalledTimes(10);
     expect(
       admin(
         `select count(*) from private.provider_requests where evaluation_run='${run}' and repair`,
@@ -294,10 +321,10 @@ describe('separately authorized release evaluation', () => {
     const transport = provider(plan);
     expect(await evaluateOnce(run)).toMatchObject({
       state: 'completed',
-      requestsUsed: 10,
-      costCents: 10,
+      requestsUsed: 11,
+      costCents: 11,
     });
-    expect(transport).toHaveBeenCalledTimes(10);
+    expect(transport).toHaveBeenCalledTimes(11);
     const result = report(run);
     expect(result).toMatchObject({
       identity: plan.identity,
@@ -313,8 +340,9 @@ describe('separately authorized release evaluation', () => {
       ),
     ).toBe(true);
     expect(
-      result.cases.find((c: { id: string }) => c.id === 'grade-ambiguous')
-        .output,
+      result.cases.find(
+        (c: { id: string }) => c.id === 'grade-uncertain-context',
+      ).output,
     ).toMatchObject({ outcome: 'uncertain' });
     expect(
       result.cases.find((c: { id: string }) => c.id === 'policy-rights'),
@@ -332,7 +360,7 @@ describe('separately authorized release evaluation', () => {
       ),
     ).toBe(run);
     expect(await evaluateOnce(run)).toBeNull();
-    expect(transport).toHaveBeenCalledTimes(10);
+    expect(transport).toHaveBeenCalledTimes(11);
     const ids = (plan.package.manifest as { bundles: ContentBundle[] }).bundles
       .map((b) => `'${b.id}'`)
       .join(',');
@@ -399,7 +427,7 @@ describe('separately authorized release evaluation', () => {
             verdict: 'safe',
           })),
         };
-      if (id === 'grade-wrong' || id === 'grade-ambiguous')
+      if (id === 'grade-wrong' || id === 'grade-uncertain-context')
         return {
           assessment: {
             ...(
@@ -431,8 +459,8 @@ describe('separately authorized release evaluation', () => {
       'SCORE_RANGE',
       'PASS_FAIL_REVERSAL',
     ]);
-    expect(reasons('grade-borderline_pass')).toEqual(['PASS_FAIL_REVERSAL']);
-    expect(reasons('grade-ambiguous')).toEqual(['OUTCOME_REVERSAL']);
+    expect(reasons('grade-borderline_pass')).toEqual(['INVALID_OUTPUT']);
+    expect(reasons('grade-uncertain-context')).toEqual(['OUTCOME_REVERSAL']);
     expect(reasons('grade-partial')).toEqual(['INVALID_OUTPUT']);
     expect(
       report(run).cases.find((c: { id: string }) => c.id === 'grade-partial')
@@ -584,7 +612,7 @@ describe('separately authorized release evaluation', () => {
           null,
           'PROVIDER_TIMEOUT',
           0,
-          {},
+          { inputTokens: 0, outputTokens: 0 },
         ]);
         expect(
           admin(
@@ -598,7 +626,7 @@ describe('separately authorized release evaluation', () => {
     }
     const transport = provider(plan);
     await evaluateOnce(run);
-    expect(transport).toHaveBeenCalledTimes(9);
+    expect(transport).toHaveBeenCalledTimes(10);
     expect(
       report(run).cases.find((c: { id: string }) => c.id === 'source-supported')
         .mismatches,
@@ -771,7 +799,7 @@ describe('separately authorized release evaluation', () => {
     const bundle = termBundle(`evaluation-shared-${randomUUID()}`);
     importBundles([bundle]);
     const config = {
-      policyVersion: 'content-policy-v1',
+      policyVersion: 'content-policy-v2',
       modelVersion: plan.configuration.modelVersion,
       promptVersion: plan.configuration.promptVersion,
       schemaVersion: plan.configuration.schemaVersion,
@@ -781,6 +809,7 @@ describe('separately authorized release evaluation', () => {
       gradingSchemaVersion: plan.configuration.gradingSchemaVersion,
       toolchainVersion: 'nonexecutable-tests-v1',
       modelEvaluationDigest: '1'.repeat(64),
+      modelEvaluationProtocolVersion: 'release-evaluation-v2',
       privacyApprovalDigest: '2'.repeat(64),
       deploymentApprovalDigest: '3'.repeat(64),
       providerConfigurationDigest: '4'.repeat(64),

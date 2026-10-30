@@ -27,7 +27,7 @@ const question = '40000000-0000-4000-8000-000000000001';
 const device = randomUUID();
 const scored = {
   outcome: 'scored',
-  score: 3,
+  score: 4,
   criticalClaimsMet: true,
   correctClaims: ['Lifetime ends.'],
   missingClaims: [],
@@ -573,8 +573,10 @@ describe('real authenticated database', { concurrent: false }, () => {
     expect(attempt.error).toBeNull();
     for (const [name, value] of Object.entries({
       GRADING_MODE: 'live',
-      CONTENT_POLICY_VERSION: 'content-policy-v1',
+      CONTENT_POLICY_VERSION: 'content-policy-v2',
       MODEL_EVAL_APPROVED: 'true',
+      MODEL_EVAL_PROTOCOL_VERSION: 'release-evaluation-v2',
+      MODEL_EVAL_RELEASE_DIGEST: '1'.repeat(64),
       PROVIDER_DATA_POLICY_APPROVED: 'true',
       DEPLOYMENT_RECOVERY_APPROVED: 'true',
       AI_DAILY_CAP_CENTS: '100',
@@ -659,7 +661,7 @@ describe('real authenticated database', { concurrent: false }, () => {
     const { id } = await submit();
     const first = await finish(await claim(), {
       ...scored,
-      score: 5,
+      score: 2,
       criticalClaimsMet: false,
     });
     expect(first.error).toBeNull();
@@ -685,7 +687,13 @@ describe('real authenticated database', { concurrent: false }, () => {
     ).toEqual([]);
     expect((await a.rpc('retry_grade', { p_attempt: id })).data).toBe(4);
     expect(
-      (await finish(await claim(), { ...scored, score: 1 })).error,
+      (
+        await finish(await claim(), {
+          ...scored,
+          score: 1,
+          criticalClaimsMet: false,
+        })
+      ).error,
     ).toBeNull();
     expect(
       (await a.from('review_episodes').select().eq('user_id', uid)).data,
@@ -849,7 +857,11 @@ describe('real authenticated database', { concurrent: false }, () => {
             job,
             event.outcome === 'unscored'
               ? { outcome: 'uncertain', reason: 'Synthetic uncertainty.' }
-              : { ...scored, score: event.outcome === 'failed' ? 1 : 3 },
+              : {
+                  ...scored,
+                  score: event.outcome === 'failed' ? 1 : 4,
+                  criticalClaimsMet: event.outcome !== 'failed',
+                },
           )
         ).error,
       ).toBeNull();

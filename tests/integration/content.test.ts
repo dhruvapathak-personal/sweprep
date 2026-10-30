@@ -201,7 +201,7 @@ describe('content-only import and publication capabilities', () => {
     );
     const body = {
       schemaVersion: 1,
-      policyVersion: 'content-policy-v1',
+      policyVersion: 'content-policy-v2',
       bundles: [raw],
     };
     expect(() =>
@@ -308,6 +308,39 @@ describe('content-only import and publication capabilities', () => {
         `select count(*) from public.question_versions where id='${bundle.id}'`,
       ),
     ).toBe('0');
+  });
+  it('preserves historical receipts without accepting old or mixed calibration identities for publication', () => {
+    const bundle = questionBundle(`version-boundary-${randomUUID()}`);
+    importBundles([bundle]);
+    const current = syntheticEvidence(bundle);
+    for (const evidence of [
+      {
+        ...current,
+        policyVersion: 'content-policy-v1',
+        graderVersion: 'grader-v1',
+        promptVersion: 'qualification-prompts-v1',
+      },
+      { ...current, graderVersion: 'grader-v1' },
+      { ...current, modelEvaluationProtocolVersion: 'release-evaluation-v1' },
+    ]) {
+      const id = randomUUID();
+      sql(`insert into private.qualification_runs(id,candidate_id,candidate_digest,policy_version,evidence,evidence_digest,decision)
+        values('${id}','${bundle.id}','${bundle.digest}','${evidence.policyVersion}',${literal(evidence)},'${contentDigest(evidence)}','qualified')`);
+      const stored = sql(
+        `select evidence from private.qualification_runs where id='${id}'`,
+      );
+      expect(() => publish([release(bundle, id)])).toThrow(
+        /QUALIFICATION_REQUIRED/,
+      );
+      expect(
+        sql(`select evidence from private.qualification_runs where id='${id}'`),
+      ).toBe(stored);
+      expect(() =>
+        sql(
+          `update private.qualification_runs set evidence='{}' where id='${id}'`,
+        ),
+      ).toThrow(/IMMUTABLE_HISTORY/);
+    }
   });
   it('rolls back a whole import on missing dependencies', () => {
     const good = termBundle('rollback-import');

@@ -15,6 +15,7 @@ import {
   qualificationIntake,
   qualificationTask,
   sourceSnapshot,
+  calibrationIssues,
 } from './qualification-contract.ts';
 import { gradingTask } from '../contracts/grading.ts';
 import { structuredRequest } from './provider.ts';
@@ -37,14 +38,14 @@ const policyCode = z.enum([
 ]);
 export const evaluationConfiguration = z
   .object({
-    protocolVersion: z.literal('release-evaluation-v1'),
-    policyVersion: z.literal('content-policy-v1'),
+    protocolVersion: z.literal('release-evaluation-v2'),
+    policyVersion: z.literal('content-policy-v2'),
     modelVersion: z.literal('gpt-5.4-mini-2026-03-17'),
-    promptVersion: z.literal('qualification-prompts-v1'),
-    schemaVersion: z.literal('qualification-schema-v1'),
-    fixtureVersion: z.literal('machine-fixtures-v1'),
-    graderVersion: z.literal('grader-v1'),
-    gradingPromptVersion: z.literal('grade-prompt-v1'),
+    promptVersion: z.literal('qualification-prompts-v2'),
+    schemaVersion: z.literal('qualification-schema-v2'),
+    fixtureVersion: z.literal('machine-fixtures-v2'),
+    graderVersion: z.literal('grader-v2'),
+    gradingPromptVersion: z.literal('grade-prompt-v2'),
     gradingSchemaVersion: z.literal('grade-schema-v1'),
     toolchainVersion: z.literal('conceptual-no-execution-v1'),
     inputUsdPerMillion: z.literal(0.75),
@@ -52,7 +53,7 @@ export const evaluationConfiguration = z
     requestCents: z.literal(10),
     codeDigest: digest,
     mode: z.enum(['live', 'mock']),
-    dailyCap: z.number().int().min(0).max(100),
+    dailyCap: z.number().int().min(0).max(1000),
     monthlyCap: z.number().int().min(0).max(2000),
     batchCap: z.number().int().min(0).max(2000),
     maxRequests: z.number().int().min(1).max(180),
@@ -72,7 +73,8 @@ const gradeExpectation = z
       'partial',
       'borderline_pass',
       'strong',
-      'ambiguous',
+      'non_answer',
+      'uncertain_context',
     ]),
     outcome: z.enum(['scored', 'uncertain']),
     minScore: z.number().int().min(0).max(5).nullable(),
@@ -151,6 +153,8 @@ const packageSchema = z
 export type EvaluationPackage = z.infer<typeof packageSchema>;
 
 const codePaths = [
+  'lib/content/authoring-contract.ts',
+  'lib/content/authoring.ts',
   'lib/content/evaluation-contract.ts',
   'lib/content/model-evaluation.ts',
   'lib/content/qualification-contract.ts',
@@ -161,7 +165,11 @@ const codePaths = [
   'lib/contracts/study.ts',
   'lib/contracts/content.ts',
   'lib/server/ai/grader.ts',
+  'lib/server/env.ts',
   'scripts/content-evaluate.ts',
+  'scripts/content-author.ts',
+  'supabase/migrations/202610300008_calibration_v2.sql',
+  'supabase/migrations/202610300009_conceptual_authoring.sql',
   'supabase/migrations/202610290006_qualification.sql',
   'supabase/migrations/202610290007_model_evaluation.sql',
   'package-lock.json',
@@ -303,6 +311,8 @@ function compileCase(entry: EvaluationCase) {
   )
     throw new Error('CASE_EVIDENCE_INVALID');
   const candidate = bundleSchema.parse(entry.candidate);
+  if (calibrationIssues(candidate).length)
+    throw new Error('CANDIDATE_INPUT_INVALID');
   const build = (repair: boolean) => {
     if (entry.stage === 'grade') {
       if (
@@ -314,7 +324,7 @@ function compileCase(entry: EvaluationCase) {
         throw new Error('CASE_EXPECTATION_INVALID');
       const g = expected.grade;
       if (
-        g.kind === 'ambiguous'
+        g.kind === 'uncertain_context'
           ? g.outcome !== 'uncertain' ||
             g.minScore !== null ||
             g.maxScore !== null ||
@@ -323,7 +333,7 @@ function compileCase(entry: EvaluationCase) {
             g.minScore === null ||
             g.maxScore === null ||
             g.minScore > g.maxScore ||
-            g.pass !== !['wrong', 'partial'].includes(g.kind) ||
+            g.pass !== !['wrong', 'partial', 'non_answer'].includes(g.kind) ||
             (g.pass
               ? g.minScore < candidate.payload.rubric.passScore
               : g.maxScore >= candidate.payload.rubric.passScore)
@@ -409,7 +419,8 @@ export function compileEvaluation(raw: unknown, rawConfiguration: unknown) {
           candidate.dependencies
             .map((d) => manifest.bundles.find((b) => b.id === d.id)!)
             .filter(Boolean),
-        ).length > 0
+        ).length > 0 ||
+        calibrationIssues(candidate).length > 0
       );
     })
   )
@@ -435,9 +446,14 @@ export function compileEvaluation(raw: unknown, rawConfiguration: unknown) {
     !['source', 'fixtures', 'critic', 'grade', 'policy'].every((stage) =>
       cases.some((c) => c.stage === stage),
     ) ||
-    !['wrong', 'partial', 'borderline_pass', 'strong', 'ambiguous'].every(
-      (kind) => cases.some((c) => c.expected.grade?.kind === kind),
-    ) ||
+    ![
+      'wrong',
+      'partial',
+      'borderline_pass',
+      'strong',
+      'non_answer',
+      'uncertain_context',
+    ].every((kind) => cases.some((c) => c.expected.grade?.kind === kind)) ||
     !cases.some((c) => c.stage === 'source' && c.expected.accepted === false) ||
     !cases.some((c) => c.stage === 'critic' && c.expected.accepted === false) ||
     !cases.some((c) => c.expected.policy.includes('REUSE_RIGHTS_REQUIRED'))
